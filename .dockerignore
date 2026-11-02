@@ -1,5 +1,5 @@
 .git
-target
+**/target
 **/__pycache__
 # demo/generated holds the client secret and any key the install script
 # wrote. Only tlsCa's file, the iya-sts listener CA trust chain, goes into the
