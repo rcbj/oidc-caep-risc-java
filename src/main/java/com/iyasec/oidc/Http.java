@@ -46,6 +46,7 @@ public final class Http {
         try {
             uri = new URI(url);
         } catch (Exception err) {
+            Caught.error(err);
             throw new OidcError(code, url + " is not an http(s) URL", err);
         }
         String scheme = uri.getScheme();
@@ -71,11 +72,14 @@ public final class Http {
         } catch (OidcError err) {
             throw err;
         } catch (HttpTimeoutException err) {
+            Caught.error(err);
             throw new OidcError(code, url + " did not answer within " + TIMEOUT_S + " s", err);
         } catch (InterruptedException err) {
+            Caught.error(err);
             Thread.currentThread().interrupt();
             throw new OidcError(code, url + ": " + err, err);
         } catch (Exception err) {
+            Caught.error(err);
             String message = String.valueOf(err.getMessage());
             if (message.contains("exceed") || message.contains("capacity") || message.contains("limit")) {
                 throw new OidcError(code, url + " answered more than " + MAX_BYTES + " bytes", err);
@@ -103,6 +107,7 @@ public final class Http {
         } catch (OidcError err) {
             throw err;
         } catch (Exception err) {
+            Caught.error(err);
             throw new OidcError(code, url + ": " + err, err);
         }
     }

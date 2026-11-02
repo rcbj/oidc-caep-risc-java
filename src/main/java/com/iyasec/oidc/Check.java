@@ -46,6 +46,7 @@ public final class Check {
         try {
             config = Config.readConfigFile(file);
         } catch (OidcError err) {
+            Caught.error(err);
             System.err.println(err.getMessage());
             return 1;
         }

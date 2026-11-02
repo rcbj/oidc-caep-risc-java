@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 package com.iyasec.oidc.ssf;
 
+import com.iyasec.oidc.Caught;
 import com.iyasec.oidc.Discovery;
 import com.iyasec.oidc.Http;
 import com.iyasec.oidc.Jsons;
@@ -113,6 +114,7 @@ public final class SignalsReceiver {
             try {
                 thread.join(20_000);
             } catch (InterruptedException err) {
+                Caught.error(err);
                 Thread.currentThread().interrupt();
             }
             if (loopThread == thread) loopThread = null;
@@ -129,6 +131,7 @@ public final class SignalsReceiver {
                     try {
                         mine.done.complete(pollNow());
                     } catch (Throwable err) {
+                        Caught.error(err);
                         mine.done.completeExceptionally(err);
                     }
                 }, "ssf-poll-once");
@@ -140,6 +143,7 @@ public final class SignalsReceiver {
         try {
             return current.done.join();
         } catch (CompletionException err) {
+            Caught.error(err);
             Throwable cause = err.getCause() == null ? err : err.getCause();
             if (cause instanceof RuntimeException runtime) throw runtime;
             if (cause instanceof Error error) throw error;
@@ -153,6 +157,7 @@ public final class SignalsReceiver {
             try {
                 if (pollOnce()) delay = 0;
             } catch (Exception err) {
+                Caught.warn(err);
                 log.warn("ssf: poll failed: " + err);
                 delay = Math.min(pollIntervalMs * 4, 60_000);
             }
@@ -161,6 +166,7 @@ public final class SignalsReceiver {
             try {
                 Thread.sleep(delay);
             } catch (InterruptedException err) {
+                Caught.warn(err);
                 return;
             }
         }
@@ -204,6 +210,7 @@ public final class SignalsReceiver {
                     ack.add(jti);
                 }
             } catch (Exception err) {
+                Caught.warn(err);
                 log.warn("ssf: SET " + jti + " refused: " + err);
                 String code = err instanceof OidcError oidc && "signature".equals(oidc.code) ? "invalid_key" : "invalid_request";
                 Map<String, Object> problem = new LinkedHashMap<>();
@@ -265,6 +272,7 @@ public final class SignalsReceiver {
                 try {
                     onEnd.accept(sessions, event);
                 } catch (Exception err) {
+                    Caught.error(err);
                     log.error("ssf: onEndSessions threw for " + eventType + " (SET " + jti + " is still acknowledged): " + err);
                     event.put("ended", false);
                 }
@@ -277,6 +285,7 @@ public final class SignalsReceiver {
                 try {
                     handler.accept(event);
                 } catch (Exception err) {
+                    Caught.error(err);
                     log.error("ssf: a handler for " + eventType + " threw (SET " + jti + " is still acknowledged): " + err);
                 }
             }
@@ -385,6 +394,7 @@ public final class SignalsReceiver {
             try {
                 parsed = Jsons.read(answer.body());
             } catch (IllegalArgumentException err) {
+                Caught.error(err);
                 parsed = answer.body();
             }
         }
@@ -396,6 +406,7 @@ public final class SignalsReceiver {
         try {
             text = Jsons.write(value);
         } catch (Exception err) {
+            Caught.error(err);
             text = String.valueOf(value);
         }
         return text.length() > 300 ? text.substring(0, 300) : text;

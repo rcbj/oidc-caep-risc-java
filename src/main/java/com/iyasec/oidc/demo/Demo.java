@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 package com.iyasec.oidc.demo;
 
+import com.iyasec.oidc.Caught;
 import com.iyasec.oidc.Config;
 import com.iyasec.oidc.Jsons;
 import com.iyasec.oidc.OidcError;
@@ -58,6 +59,7 @@ public final class Demo {
             URI redirect = URI.create(String.valueOf(raw.getOrDefault("redirectUri", raw.getOrDefault("redirect_uri", "http://localhost/"))));
             secureCookies = "https".equals(redirect.getScheme()) || "localhost".equals(redirect.getHost()) || "127.0.0.1".equals(redirect.getHost());
         } catch (Exception err) {
+            Caught.error(err);
             System.err.println("cannot read configuration: " + err);
         }
         HttpServer server = HttpServer.create(new InetSocketAddress("0.0.0.0", port), 0);
@@ -106,6 +108,7 @@ public final class Demo {
             }
             send(exchange, 404, page("Not found", "<h1>Not found</h1>"), "text/html; charset=utf-8", null);
         } catch (Exception err) {
+            Caught.error(err);
             err.printStackTrace();
             try {
                 send(exchange, 500, page("Error", "<h1>Something went wrong</h1><p class=\"problem\">" + esc(err) + "</p><p><a href=\"/\">Home</a></p>"), "text/html; charset=utf-8", null);
@@ -122,6 +125,7 @@ public final class Demo {
         try {
             party = rp();
         } catch (Exception err) {
+            Caught.error(err);
             problem = "The relying party is not configured yet: " + err + ". Run scripts/configure_iya_sts.py.";
         }
         if (session != null) {
@@ -176,6 +180,7 @@ public final class Demo {
             if (receiver != null) receiver.track(MemorySessionIndex.trackedFromLogin(sid, login, null));
             redirect(exchange, 303, "/", List.of(clear, cookie("oidc_session", sid, "/", 8 * 3600)));
         } catch (Exception err) {
+            Caught.error(err);
             String what = err instanceof OidcError oidc ? oidc.code + ": " + oidc.getMessage() : String.valueOf(err);
             send(exchange, 400, page("Sign-in failed", "<h1>Sign-in failed</h1><p class=\"problem\">" + esc(what) + "</p><p><a href=\"/\">Start again</a></p>"),
                     "text/html; charset=utf-8", List.of(clear));
@@ -205,9 +210,11 @@ public final class Demo {
             rp = created;
             return created;
         } catch (RuntimeException err) {
+            Caught.error(err);
             rp = null;
             throw err;
         } catch (Exception err) {
+            Caught.error(err);
             rp = null;
             throw new OidcError("config", String.valueOf(err), err);
         }
@@ -233,6 +240,7 @@ public final class Demo {
             created.start();
             receiverState = "polling stream " + created.stream().get("stream_id") + " at " + ssf.get("transmitter");
         } catch (Exception err) {
+            Caught.error(err);
             receiver = null;
             receiverState = "not running: " + err;
             System.err.println("ssf: the receiver did not start: " + err);
@@ -271,6 +279,7 @@ public final class Demo {
         try {
             uri = URI.create(url);
         } catch (Exception err) {
+            Caught.error(err);
             return url;
         }
         String host = uri.getHost();
@@ -369,6 +378,7 @@ public final class Demo {
             String padded = mod == 0 ? body : body + "====".substring(mod);
             return (Map<String, Object>) Jsons.read(new String(Base64.getUrlDecoder().decode(padded), StandardCharsets.UTF_8));
         } catch (Exception err) {
+            Caught.warn(err);
             return null;
         }
     }
@@ -379,6 +389,7 @@ public final class Demo {
             mac.init(new SecretKeySpec(SECRET, "HmacSHA256"));
             return Base64.getUrlEncoder().withoutPadding().encodeToString(mac.doFinal(value.getBytes(StandardCharsets.UTF_8)));
         } catch (Exception err) {
+            Caught.error(err);
             throw new IllegalStateException(err);
         }
     }

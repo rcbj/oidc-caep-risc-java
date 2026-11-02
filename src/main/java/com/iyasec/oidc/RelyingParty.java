@@ -258,6 +258,7 @@ public final class RelyingParty {
             try {
                 body = Jsons.read(answer.body());
             } catch (Exception err) {
+                Caught.error(err);
                 throw new OidcError("protocol", "userinfo did not answer JSON", err);
             }
             claims = Jsons.map(body);
@@ -348,6 +349,7 @@ public final class RelyingParty {
         try {
             parsed = answer.body() == null || answer.body().isEmpty() ? Map.of() : Jsons.read(answer.body());
         } catch (Exception err) {
+            Caught.error(err);
             throw new OidcError("protocol", url + " answered " + answer.status() + " with no JSON", err);
         }
         Map<String, Object> doc = Jsons.map(parsed);

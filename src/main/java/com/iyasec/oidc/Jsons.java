@@ -20,6 +20,7 @@ public final class Jsons {
         try {
             return MAPPER.readValue(text, ANY);
         } catch (Exception err) {
+            Caught.error(err);
             throw new IllegalArgumentException(err.getMessage(), err);
         }
     }
@@ -28,6 +29,7 @@ public final class Jsons {
         try {
             return MAPPER.writeValueAsString(value);
         } catch (Exception err) {
+            Caught.error(err);
             throw new IllegalArgumentException(err.getMessage(), err);
         }
     }

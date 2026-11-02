@@ -30,6 +30,7 @@ public final class IdToken {
             byte[] digest = MessageDigest.getInstance(name).digest(value.getBytes(StandardCharsets.UTF_8));
             return Codec.b64UrlEncode(Arrays.copyOf(digest, digest.length / 2));
         } catch (Exception err) {
+            Caught.error(err);
             throw new OidcError("validation", err.getMessage(), err);
         }
     }
@@ -58,6 +59,7 @@ public final class IdToken {
         } catch (OidcError err) {
             throw err;
         } catch (Exception err) {
+            Caught.error(err);
             throw new OidcError("signature", "the ID token was refused: signature: " + err, err);
         }
         if (!ok) throw new OidcError("signature", "the ID token was refused: signature verification failed");
@@ -118,6 +120,7 @@ public final class IdToken {
         try {
             body = Jsons.read(answer.body());
         } catch (Exception err) {
+            Caught.error(err);
             throw new OidcError("discovery", "the JWKS at " + jwksUri + " is not JSON", err);
         }
         Map<String, Object> doc = Jsons.map(body);
@@ -145,6 +148,7 @@ public final class IdToken {
         try {
             signature = Codec.b64UrlDecode(parts[2], "signature");
         } catch (Exception err) {
+            Caught.error(err);
             throw new OidcError("signature", "the ID token is not a compact JWS: " + err, err);
         }
         if (alg.startsWith("HS")) return JwsCrypto.verifyHmac(secret.getBytes(StandardCharsets.UTF_8), alg, input, signature);
@@ -191,6 +195,7 @@ public final class IdToken {
         } catch (OidcError err) {
             throw err;
         } catch (Exception err) {
+            Caught.error(err);
             throw new OidcError("signature", "the ID token is not a compact JWS: " + err, err);
         }
     }

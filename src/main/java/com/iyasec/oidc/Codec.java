@@ -41,6 +41,7 @@ public final class Codec {
         try {
             return MessageDigest.getInstance("SHA-256").digest(data);
         } catch (Exception err) {
+            Caught.error(err);
             throw new OidcError("protocol", err.getMessage(), err);
         }
     }

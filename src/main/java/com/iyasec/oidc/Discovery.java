@@ -85,6 +85,7 @@ public final class Discovery {
         try {
             body = Jsons.read(answer.body());
         } catch (Exception err) {
+            Caught.error(err);
             throw new OidcError("discovery", metadataUrl + " did not answer JSON", err);
         }
         return validateProviderMetadata(body, expected);
@@ -141,6 +142,7 @@ public final class Discovery {
         try {
             return new URI(value);
         } catch (Exception err) {
+            Caught.warn(err);
             return null;
         }
     }

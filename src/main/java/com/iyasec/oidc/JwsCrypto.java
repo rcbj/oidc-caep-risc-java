@@ -106,6 +106,7 @@ public final class JwsCrypto {
         } catch (OidcError err) {
             throw err;
         } catch (Exception err) {
+            Caught.error(err);
             throw new OidcError("signature", "the transmitter's key " + (jwk.get("kid") == null ? "" : jwk.get("kid")) + " cannot be read: " + err, err);
         }
         throw new OidcError("signature", "the key type " + jwk.get("kty") + " cannot be read");
@@ -118,6 +119,7 @@ public final class JwsCrypto {
             String body = pem.replace("-----BEGIN PRIVATE KEY-----", "").replace("-----END PRIVATE KEY-----", "").replaceAll("\\s", "");
             key = readPkcs8(Base64.getDecoder().decode(body));
         } catch (Exception err) {
+            Caught.error(err);
             throw new OidcError("config", "the private key could not be read as " + alg + ": " + err, err);
         }
         if (spec == null) throw new OidcError("config", "the private key could not be read as " + alg + ": unsupported algorithm");
@@ -138,6 +140,7 @@ public final class JwsCrypto {
         } catch (OidcError err) {
             throw err;
         } catch (Exception err) {
+            Caught.error(err);
             throw new OidcError("protocol", "the client assertion could not be signed: " + err, err);
         }
     }
@@ -161,6 +164,7 @@ public final class JwsCrypto {
         } catch (OidcError err) {
             throw err;
         } catch (Exception err) {
+            Caught.error(err);
             throw new OidcError("protocol", "the client assertion could not be signed: " + err, err);
         }
     }
@@ -175,6 +179,7 @@ public final class JwsCrypto {
         try {
             return MessageDigest.isEqual(mac(spec[1], secret, input), signature);
         } catch (Exception err) {
+            Caught.warn(err);
             return false;
         }
     }
@@ -203,8 +208,10 @@ public final class JwsCrypto {
             verifier.update(input);
             return verifier.verify(signature);
         } catch (GeneralSecurityException | IllegalArgumentException err) {
+            Caught.warn(err);
             return false;
         } catch (Exception err) {
+            Caught.warn(err);
             return false;
         }
     }
@@ -234,6 +241,7 @@ public final class JwsCrypto {
             try {
                 return KeyFactory.getInstance(algorithm).generatePrivate(spec);
             } catch (GeneralSecurityException err) {
+                // The next algorithm name may accept this PKCS#8 key.
                 last = err;
             }
         }

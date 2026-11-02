@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 package com.iyasec.oidc.ssf;
 
+import com.iyasec.oidc.Caught;
 import com.iyasec.oidc.Codec;
 import com.iyasec.oidc.Jsons;
 import com.iyasec.oidc.JwsCrypto;
@@ -31,6 +32,7 @@ public final class SecEvent {
         } catch (OidcError err) {
             throw err;
         } catch (IllegalArgumentException err) {
+            Caught.error(err);
             String message = String.valueOf(err.getMessage());
             if (message.contains("base64url")) {
                 String what = message.contains("header") ? "header" : message.contains("payload") ? "payload" : "signature";
@@ -64,6 +66,7 @@ public final class SecEvent {
         try {
             signature = Codec.b64UrlDecode(parts[2], "signature");
         } catch (Exception err) {
+            Caught.error(err);
             throw new OidcError("signature", "the SET's signature is not base64url", err);
         }
         byte[] data = (parts[0] + "." + parts[1]).getBytes(StandardCharsets.US_ASCII);

@@ -25,6 +25,7 @@ public final class Config {
         try {
             raw = Jsons.read(Files.readString(file));
         } catch (Exception err) {
+            Caught.error(err);
             throw new OidcError("config", "could not read " + path + ": " + err, err);
         }
         return resolveConfig(raw, file.toAbsolutePath().getParent().toString());
@@ -83,6 +84,7 @@ public final class Config {
             try {
                 body = Jsons.read(Files.readString(full));
             } catch (Exception err) {
+                Caught.error(err);
                 throw new OidcError("config", "could not read metadata at " + full + ": " + err, err);
             }
             metadata = Discovery.validateProviderMetadata(body, issuer);
@@ -171,6 +173,7 @@ public final class Config {
         try {
             return Files.readString(full).strip();
         } catch (Exception err) {
+            Caught.error(err);
             throw new OidcError("config", "could not read " + what + " at " + full + ": " + err, err);
         }
     }
@@ -189,6 +192,7 @@ public final class Config {
         try {
             return Files.readString(full);
         } catch (IOException err) {
+            Caught.warn(err);
             return null;
         }
     }
@@ -230,6 +234,7 @@ public final class Config {
                 java.net.URI uri = new java.net.URI(value);
                 return new URIParts(uri.getScheme(), uri.getHost());
             } catch (Exception err) {
+                Caught.warn(err);
                 return null;
             }
         }
