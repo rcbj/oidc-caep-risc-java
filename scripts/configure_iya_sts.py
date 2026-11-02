@@ -20,6 +20,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 
 from trust_chain import save_trust_chain, trust_path  # noqa: E402
 
+ROOT = Path(__file__).resolve().parents[1]
 APP_NAME = "oidc-caep-risc-java demo"
 MAX_BYTES = 2 * 1024 * 1024
 TIMEOUT_S = 15

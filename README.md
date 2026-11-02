@@ -31,7 +31,9 @@ A catch that recovers does not throw. It is still logged. A poll is retried, the
 docker build --target test .
 ```
 
-The suite runs in a container. The tests build an in-process stub provider and a stub transmitter. They do not need a live iya-sts.
+The suite runs in a container. The tests build an in-process stub provider and a stub transmitter. They do not start iya-sts.
+
+`python3 scripts/live_iya_sts.py` is the live half. It builds this demo image, starts iya-sts when `IYA_STS_URL` is unset, registers the demo, signs in, and requires a credential-change event and a session-revoked event on `GET /live-status`. The second event ends the local session. It never binds port 3000 or 8081. The nightly workflow runs the unit suite and this script.
 
 ## Layout
 
@@ -51,7 +53,7 @@ The suite runs in a container. The tests build an in-process stub provider and a
 docker compose up --build
 ```
 
-`GET /healthz` returns `ok`. `GET /` is the page. `GET /login` starts `authorize` and redirects. `GET /callback` completes the code exchange. `POST /logout` signs the local session out.
+`GET /healthz` returns `ok`. `GET /` is the page. `GET /login` starts `authorize` and redirects. `GET /callback` completes the code exchange. `POST /logout` signs the local session out. `GET /live-status` is JSON for the sign-in and the Shared Signals events this process has accepted. It does not include tokens.
 
 `docker-compose.yml` sets `network_mode: host`. The image sets `ENV PORT=3000`. The health check calls `http://127.0.0.1:${PORT}/healthz`. The running container's `PORT` wins over the shell's when `scripts/configure_iya_sts.py` registers the application.
 

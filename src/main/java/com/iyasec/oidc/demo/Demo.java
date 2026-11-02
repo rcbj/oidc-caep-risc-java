@@ -29,13 +29,15 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 
-/** Demo. GET /healthz, GET /, GET /login, GET /callback, POST /logout. */
+/** Demo. GET /healthz, GET /live-status, GET /, GET /login, GET /callback, POST /logout. */
 public final class Demo {
     private static final Path ROOT = Path.of("").toAbsolutePath();
     private static final byte[] SECRET = secret();
     private static final Map<String, Session> SESSIONS = new ConcurrentHashMap<>();
+    private static final List<Map<String, String>> LIVE_EVENTS = new CopyOnWriteArrayList<>();
     private static final SecureRandom RANDOM = new SecureRandom();
     private static volatile RelyingParty rp;
     private static volatile String receiverState = "";
@@ -78,6 +80,10 @@ public final class Demo {
             exchange.getRequestBody().readAllBytes();
             String path = exchange.getRequestURI().getPath();
             String method = exchange.getRequestMethod();
+            if ("/live-status".equals(path) && "GET".equals(method)) {
+                liveStatus(exchange);
+                return;
+            }
             if ("/healthz".equals(path)) {
                 send(exchange, 200, "ok".getBytes(StandardCharsets.UTF_8), "text/plain", null);
                 return;
@@ -150,6 +156,31 @@ public final class Demo {
                 + ". It sends the browser to the authorization endpoint (Authorization Code, PKCE S256) and takes the tokens on the back channel.</p>"
                 + "<p class=\"buttons\"><a class=\"button primary\" href=\"/login\">Sign in with OpenID Connect</a></p>";
         send(exchange, 200, page("Sign in", body), "text/html; charset=utf-8", null);
+    }
+
+    private static void liveStatus(HttpExchange exchange) throws IOException {
+        Session session = session(exchange);
+        String subject = null;
+        if (session != null) {
+            RelyingParty.Login login = session.login;
+            String who = first(login.preferredUsername, login.email, login.subject);
+            if (!who.isEmpty()) subject = who;
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("signedIn", session != null);
+        body.put("subject", subject);
+        body.put("receiver", receiverState);
+        body.put("events", List.copyOf(LIVE_EVENTS));
+        send(exchange, 200, Jsons.write(body).getBytes(StandardCharsets.UTF_8), "application/json", null);
+    }
+
+    private static void rememberEvent(Map<String, Object> event) {
+        Map<String, String> row = new LinkedHashMap<>();
+        Object type = event.get("type");
+        Object jti = event.get("jti");
+        row.put("type", type == null ? "" : String.valueOf(type));
+        row.put("jti", jti == null ? "" : String.valueOf(jti));
+        LIVE_EVENTS.add(row);
     }
 
     private static void login(HttpExchange exchange) throws IOException {
@@ -235,6 +266,7 @@ public final class Demo {
                 .description("oidc-caep-risc demo (" + party.config().get("clientId") + ")")
                 .pollIntervalMs(interval)
                 .build();
+        created.on("*", Demo::rememberEvent);
         receiver = created;
         try {
             created.start();
