@@ -21,7 +21,7 @@ Java 17. JSON is Jackson. Signatures are verified with the JDK (`Signature` and 
 ## Usage
 
 ```sh
-mvn -B test
+docker build --target test .
 ```
 
 ```java
@@ -39,15 +39,17 @@ Keep the transaction (`state`, nonce, code verifier) until the browser returns. 
 ## Tests
 
 ```sh
-mvn -B test
+docker build --target test .
 ```
+
+The `test` stage runs `mvn -B test` in `maven:3.9.9-eclipse-temurin-17`. GitHub Actions uses that command. Do not run Maven on the host. The demo stage packages with `-DskipTests` in its own Maven image.
 
 ## Demo
 
 `docker-compose.yml` sets `network_mode: host`. The process binds `PORT`, default 3000. `ENV PORT=3000` in the image keeps an unset value on 3000, and the health check calls `http://127.0.0.1:${PORT}/healthz`.
 
 ```sh
-mvn -q exec:java
+docker compose up --build
 ```
 
 `GET /healthz` returns `ok`. `GET /` is the page. `GET /login` redirects to the provider. `GET /callback` completes the sign-in. `POST /logout` ends the local session.

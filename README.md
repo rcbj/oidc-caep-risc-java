@@ -28,10 +28,10 @@ A catch that recovers does not throw. It is still logged. A poll is retried, the
 ## Tests
 
 ```sh
-mvn -B test
+docker build --target test .
 ```
 
-The tests build an in-process stub provider and a stub transmitter. They do not need a live iya-sts.
+The suite runs in a container. The tests build an in-process stub provider and a stub transmitter. They do not need a live iya-sts.
 
 ## Layout
 
@@ -48,7 +48,7 @@ The tests build an in-process stub provider and a stub transmitter. They do not 
 `PORT` defaults to 3000. A loopback redirect and post-logout URL follow `PORT`. Any other host is left as written. An explicit `PUBLIC_URL` or `--public-url` replaces the origin and keeps the path. The default `http://localhost:3000` is not an explicit public URL.
 
 ```sh
-mvn -q exec:java
+docker compose up --build
 ```
 
 `GET /healthz` returns `ok`. `GET /` is the page. `GET /login` starts `authorize` and redirects. `GET /callback` completes the code exchange. `POST /logout` signs the local session out.
