@@ -4,9 +4,13 @@
 # `docker build --target test` runs the suite in this image.
 # The demo image below does not run it.
 FROM maven:3.9.9-eclipse-temurin-17 AS test
+# TrustChainTest runs the install script's trust-chain code, which is Python.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-cryptography && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY pom.xml .
 COPY src src
+COPY scripts scripts
+COPY demo/oidc.json demo/oidc.json
 RUN mvn -B test
 
 FROM maven:3.9.9-eclipse-temurin-17 AS build
@@ -19,8 +23,16 @@ FROM eclipse-temurin:17-jre
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-cryptography openssl curl ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /src/target/oidc-caep-risc-0.1.0.jar /app/oidc-caep-risc.jar
-COPY demo demo
 COPY scripts scripts
+# The demo, and with it tlsCa's file: demo/generated/idp-ca.pem, the iya-sts
+# listener CA trust chain scripts/configure_iya_sts.py saved. The image trusts
+# that iya-sts with no bind mount and no fetch. Rebuild after running the
+# install script against a different iya-sts.
+# .dockerignore admits that one file from demo/generated (never the client
+# secret or a key). A COPY of the demo DIRECTORY succeeds with or without it,
+# so a fresh clone and CI still build; naming the file, or a glob that
+# matches nothing, fails the build in both builders.
+COPY demo demo
 COPY demo/entrypoint.sh /entrypoint.sh
 RUN chmod 755 /entrypoint.sh
 ENV PORT=3000
