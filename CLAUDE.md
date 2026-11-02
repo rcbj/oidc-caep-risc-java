@@ -13,9 +13,9 @@ Java 17. JSON is Jackson. Signatures are verified with the JDK (`Signature` and 
 | Path | What it is |
 |---|---|
 | `src/main/java/com/iyasec/oidc` | The library. Source is `RelyingParty.java`, `ClientAuth.java`, `IdToken.java`, `Discovery.java`, `ssf/`. |
-| `src/test/java` | JUnit 5. A stub provider and a stub transmitter. No live iya-sts. |
+| `src/test/java` | JUnit 5. A stub provider and a stub transmitter. No live iya-sts. `TrustChainTest`: the install script writes the whole chain to `tlsCa`'s path, and the library trusts an HTTPS provider through that file. |
 | `demo` | `com.iyasec.oidc.demo.Demo` and `demo/public/`. Config is `demo/oidc.json`. |
-| `scripts` | `configure_iya_sts.py` registers the confidential client. `trust_chain.py` refreshes the listener CA file named by `tlsCa`. Both are Python, including in this Java repository. |
+| `scripts` | `configure_iya_sts.py` registers the confidential client and writes the listener CA trust chain to the file `tlsCa` names. `trust_chain.py` holds `save_trust_chain()` and refreshes that file. Both are Python, including in this Java repository. |
 | `Dockerfile`, `docker-compose.yml` | The demo image. Compose uses host networking. |
 
 ## Usage
@@ -44,7 +44,19 @@ docker build --target test .
 
 The `test` stage runs `mvn -B test` in `maven:3.9.9-eclipse-temurin-17`. GitHub Actions uses that command. Do not run Maven on the host. The demo stage packages with `-DskipTests` in its own Maven image.
 
-The stub tests do not start iya-sts. `python3 scripts/live_iya_sts.py` does, unless `IYA_STS_URL` names one that is already running. It signs the demo in and checks two Shared Signals events on `GET /live-status`. The nightly workflow runs both. It never binds port 3000 or 8081.
+The stub tests do not start iya-sts. The `test` stage installs `python3` and `python3-cryptography` for `TrustChainTest`. `python3 scripts/live_iya_sts.py` does start one, unless `IYA_STS_URL` names one that is already running. It runs the install script on the host in a scratch copy of this checkout (it writes the `tlsCa` chain), then builds the demo image (which carries the chain), starts it with `TLS_CA_REFRESH=0` and no CA mount, signs the demo in and checks two Shared Signals events on `GET /live-status`. The nightly workflow runs both. It never binds port 3000, 8081 or 18481-18495; the defaults are 18544 and 18644. Secrets go to `docker run` as `-e NAME`.
+
+## The iya-sts trust chain (`tlsCa`)
+
+`tlsCa` in `demo/oidc.json` names the iya-sts TLS listener CA trust chain the library trusts. The default is `generated/idp-ca.pem`, relative to `demo/`. The value may also be `file:<path>`, `env:<NAME>`, or the PEM itself. The library adds every certificate in it (`CertificateFactory.generateCertificates`, every PEM block) to the JDK's default trust store, so a reissued listener certificate under the same CA is still trusted.
+
+`scripts/configure_iya_sts.py`, the install script, writes that file. It saves the whole chain iya-sts publishes at `GET /tls/server-certificate` (leaf, TLS Issuing CA, Intermediate, Root), or the chain from the TLS handshake when that path does not answer. It prints the path, the trust anchor's subject and its SHA-256 fingerprint. Compare the anchor with the Root CA on iya-sts's PKI page.
+
+The demo image build copies that file into the image at `/app/demo/generated/idp-ca.pem`, so the image trusts that iya-sts with no bind mount and no fetch. Run the install script before you build the image. Rebuild the image after running the install script against a different iya-sts. `.dockerignore` admits only that file from `demo/generated`. The client secret stays out of the image; compose mounts `demo/generated` at run time. A build with no chain file yet (a fresh clone, CI) still succeeds; the image then has no `tlsCa` file.
+
+The container entrypoint also refreshes the file from the provider at start, because a development iya-sts makes a new CA when it restarts. A failed refresh keeps the file from the build. `TLS_CA_REFRESH=0` turns the refresh off. `python3 scripts/trust_chain.py --config demo/oidc.json` refreshes it by hand.
+
+The mechanism is `COPY demo demo` plus `.dockerignore`'s `demo/generated/*` and `!demo/generated/idp-ca.pem`. Do not replace it with a COPY that names the file or globs for it: when the file is absent, BuildKit fails on the missing `demo/generated` and the classic builder fails with "no source files were specified". A directory COPY of `demo/` (which always exists) succeeds in both. Before this change `.dockerignore` did not exclude `demo/generated`, so a demo image built after the install script carried the client secret.
 
 ## Demo
 
