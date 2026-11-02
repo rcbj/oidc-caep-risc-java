@@ -39,9 +39,8 @@ The suite runs in a container. The tests build an in-process stub provider and a
 
 | Path | What it is |
 |---|---|
-| `src/main/java/com/iyasec/oidc` | The library. `RelyingParty`, `ClientAuth`, `IdToken`, `Discovery`, `Config`, `ssf/`. |
-| `src/test/java` | JUnit 5 ports of the Node relying-party and Shared Signals tests. |
-| `demo` | `com.iyasec.oidc.demo.Demo`. Config is `demo/oidc.json`. |
+| `library/` | The library, `com.iyasec:oidc-caep-risc`, nothing else in its jar. `RelyingParty`, `ClientAuth`, `IdToken`, `Discovery`, `Config`, `ssf/` in `library/src/main/java/com/iyasec/oidc`; JUnit 5 ports of the Node relying-party and Shared Signals tests in `library/src/test/java`. |
+| `demo/` | The demo module, never published: `com.iyasec.oidc.demo.Demo`, config `demo/oidc.json`. |
 | `scripts/configure_iya_sts.py` | Registers the confidential client on iya-sts. The Java repo runs this Python registrar. Loopback redirects follow the running container's `PORT`, then the shell `PORT`. |
 | `Dockerfile`, `docker-compose.yml` | The demo image. Compose uses host networking. |
 

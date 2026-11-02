@@ -12,9 +12,9 @@ Java 17. JSON is Jackson. Signatures are verified with the JDK (`Signature` and 
 
 | Path | What it is |
 |---|---|
-| `src/main/java/com/iyasec/oidc` | The library. Source is `RelyingParty.java`, `ClientAuth.java`, `IdToken.java`, `Discovery.java`, `ssf/`. |
-| `src/test/java` | JUnit 5. A stub provider and a stub transmitter. No live iya-sts. `TrustChainTest`: the install script writes the whole chain to `tlsCa`'s path, and the library trusts an HTTPS provider through that file. |
-| `demo` | `com.iyasec.oidc.demo.Demo` and `demo/public/`. Config is `demo/oidc.json`. |
+| `pom.xml` | The aggregator: builds both modules, never published. Keep its version, the library's and the demo's equal to `VERSION`. |
+| `library/` | `com.iyasec:oidc-caep-risc`, the library alone. Its `pom.xml` inherits nothing, so it is complete as published; its jar carries no demo class and no bundled dependency. Source in `library/src/main/java/com/iyasec/oidc`: `RelyingParty.java`, `ClientAuth.java`, `IdToken.java`, `Discovery.java`, `ssf/`. Tests in `library/src/test/java`: JUnit 5, a stub provider and a stub transmitter, no live iya-sts. |
+| `demo/` | `com.iyasec:oidc-caep-risc-demo`, never published. `demo/src/main/java/com/iyasec/oidc/demo/Demo`, `demo/public/`, config `demo/oidc.json`. It shades one runnable jar, which the image runs as `/app/oidc-caep-risc.jar`. `demo/src/test/java/.../TrustChainTest` runs from the repository root: the install script writes the whole chain to `tlsCa`'s path, and the library trusts an HTTPS provider through that file. |
 | `scripts` | `configure_iya_sts.py` registers the confidential client and writes the listener CA trust chain to the file `tlsCa` names. `trust_chain.py` holds `save_trust_chain()` and refreshes that file. Both are Python, including in this Java repository. |
 | `Dockerfile`, `docker-compose.yml` | The demo image. Compose uses host networking. |
 
@@ -42,7 +42,7 @@ Keep the transaction (`state`, nonce, code verifier) until the browser returns. 
 docker build --target test .
 ```
 
-The `test` stage runs `mvn -B test` in `maven:3.9.9-eclipse-temurin-17`. GitHub Actions uses that command. Do not run Maven on the host. The demo stage packages with `-DskipTests` in its own Maven image.
+The `test` stage runs `mvn -B test` (both modules) in `maven:3.9.9-eclipse-temurin-17`. GitHub Actions uses that command. Do not run Maven on the host. The demo stage packages with `-DskipTests` in its own Maven image.
 
 The stub tests do not start iya-sts. The `test` stage installs `python3` and `openssl` for `TrustChainTest`. The scripts need only Python's standard library and the `openssl` command: no `pip install` on the host, and no `python3-cryptography` in either image. `python3 scripts/live_iya_sts.py` does start one, unless `IYA_STS_URL` names one that is already running. It runs the install script on the host in a scratch copy of this checkout (it writes the `tlsCa` chain), then builds the demo image (which carries the chain), starts it with `TLS_CA_REFRESH=0` and no CA mount, signs the demo in and checks two Shared Signals events on `GET /live-status`. The nightly workflow runs both. It never binds port 3000, 8081 or 18481-18495; the defaults are 18544 and 18644. Secrets go to `docker run` as `-e NAME`. No script prints a password or secret, or a URL (trace lines carry fixed labels); the client secret and a generated test-user password (`demo/generated/<user>.password`) are files created 0600, and only the password file's path is printed. Every `ssl` context in `scripts/` sets TLS 1.2 as the minimum.
 
