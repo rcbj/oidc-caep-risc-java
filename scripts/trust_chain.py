@@ -5,8 +5,14 @@
 The first fetch does not verify TLS. If GET /tls/server-certificate is missing,
 the handshake's own chain is used. A failure leaves the file as it is and exits 0
 when this file is the process entry point.
+
+Certificate names and the self-signed check come from openssl. The SHA-256
+fingerprint is the digest of the certificate's DER. This file imports only the
+standard library.
 """
 
+import base64
+import hashlib
 import os
 import re
 import socket
@@ -17,11 +23,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.serialization import Encoding
-
 TIMEOUT = 10
+_CERT = re.compile(r"-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----")
 
 
 def trust_path(raw, base_dir):
@@ -37,24 +40,70 @@ def trust_path(raw, base_dir):
     return path if os.path.isabs(path) else os.path.abspath(os.path.join(base_dir, path))
 
 
-def _certs_of(pem):
-    blocks = re.findall(r"-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----", str(pem))
-    return [x509.load_pem_x509_certificate(block.encode()) for block in blocks]
+class _Name:
+    def __init__(self, text):
+        self.text = text
+
+    def rfc4514_string(self):
+        return self.text
+
+    def __eq__(self, other):
+        return isinstance(other, _Name) and self.text == other.text
 
 
-def _fingerprint(cert):
-    digest = cert.fingerprint(hashes.SHA256())
+class _Cert:
+    """One PEM certificate, its subject and issuer names."""
+
+    def __init__(self, pem, subject, issuer):
+        self.pem = pem if str(pem).endswith("\n") else str(pem) + "\n"
+        self.subject = subject
+        self.issuer = issuer
+
+
+def _der(pem):
+    body = "".join(line.strip() for line in str(pem).splitlines() if line and not line.startswith("-----"))
+    return base64.b64decode(body)
+
+
+def _fingerprint(pem):
+    digest = hashlib.sha256(_der(pem)).digest()
     return ":".join(f"{byte:02X}" for byte in digest)
+
+
+def _inspect(pem):
+    proc = subprocess.run(
+        ["openssl", "x509", "-noout", "-subject", "-issuer", "-nameopt", "RFC2253"],
+        input=str(pem).encode(),
+        capture_output=True,
+        timeout=TIMEOUT,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError("could not read a certificate")
+    subject = ""
+    issuer = ""
+    for line in proc.stdout.decode("utf-8", "replace").splitlines():
+        if line.startswith("subject="):
+            subject = line[len("subject="):].strip()
+        elif line.startswith("issuer="):
+            issuer = line[len("issuer="):].strip()
+    if not subject or not issuer:
+        raise RuntimeError("could not read a certificate name")
+    return _Name(subject), _Name(issuer)
+
+
+def _certs_of(pem):
+    return [_Cert(block, *_inspect(block)) for block in _CERT.findall(str(pem))]
 
 
 def _bundle(certs):
     if not certs:
         raise RuntimeError("the trust chain has no certificates")
     anchor = next((cert for cert in reversed(certs) if cert.subject == cert.issuer), certs[-1])
-    pem = "".join(cert.public_bytes(Encoding.PEM).decode() for cert in certs)
+    pem = "".join(cert.pem for cert in certs)
     if not pem.endswith("\n"):
         pem += "\n"
-    return {"pem": pem, "anchor": anchor, "count": len(certs), "fingerprint": _fingerprint(anchor)}
+    return {"pem": pem, "anchor": anchor, "count": len(certs), "fingerprint": _fingerprint(anchor.pem)}
 
 
 def _servername(hostname):
@@ -74,6 +123,7 @@ def fetch_published(origin):
     target = urlsplit(origin)
     url = f"{target.scheme}://{target.netloc}/tls/server-certificate"
     context = ssl._create_unverified_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     request = Request(url, headers={"accept": "text/plain"})
     with urlopen(request, context=context, timeout=TIMEOUT) as response:
         if response.status != 200:
