@@ -30,6 +30,7 @@ public final class SignalsReceiver {
     private final BiConsumer<List<String>, Map<String, Object>> onEnd;
     private final Map<String, String> tls;
     private final Supplier<Map<String, String>> headers;
+    private final Transport transport;
     private final List<String> eventsRequested;
     private final List<String> endOn;
     private final String description;
@@ -59,6 +60,7 @@ public final class SignalsReceiver {
         this.onEnd = builder.onEnd;
         this.tls = builder.tls == null ? Map.of() : builder.tls;
         this.headers = builder.headers;
+        this.transport = builder.transport;
         this.eventsRequested = List.copyOf(builder.eventsRequested == null ? Events.DEFAULT_EVENTS_REQUESTED : builder.eventsRequested);
         this.endOn = List.copyOf(builder.endOn == null ? Events.DEFAULT_ENDING_EVENTS : builder.endOn);
         this.description = builder.description;
@@ -388,7 +390,9 @@ public final class SignalsReceiver {
             requestHeaders.put("content-type", "application/json");
             payload = Jsons.write(body).getBytes(StandardCharsets.UTF_8);
         }
-        Http.Result answer = Http.send(url, method, requestHeaders, payload, tls, "ssf");
+        Http.Result answer = transport != null
+                ? transport.send(method, url, requestHeaders, payload)
+                : Http.send(url, method, requestHeaders, payload, tls, "ssf");
         Object parsed = null;
         if (answer.body() != null && !answer.body().isEmpty()) {
             try {
@@ -441,6 +445,27 @@ public final class SignalsReceiver {
         return value instanceof String string && !string.isEmpty();
     }
 
+    /**
+     * Sends one request to the transmitter. The relying party's
+     * {@code transmitterTransport(scope)} is one: it presents a client
+     * credentials token, with a DPoP proof when the token is DPoP-bound, and
+     * answers a {@code use_dpop_nonce} challenge once.
+     */
+    @FunctionalInterface
+    public interface Transport {
+        /**
+         * Sends the request.
+         *
+         * @param method the HTTP method
+         * @param url the URL
+         * @param headers the request headers ({@code accept}, {@code content-type}, and any the
+         *        builder's {@code headers} supplier added)
+         * @param body the body, or null
+         * @return the answer
+         */
+        Http.Result send(String method, String url, Map<String, String> headers, byte[] body);
+    }
+
     public interface Log {
         void info(String message);
         void warn(String message);
@@ -464,6 +489,7 @@ public final class SignalsReceiver {
         private final BiConsumer<List<String>, Map<String, Object>> onEnd;
         private Map<String, String> tls;
         private Supplier<Map<String, String>> headers;
+        private Transport transport;
         private List<String> eventsRequested;
         private List<String> endOn;
         private MemorySessionIndex index;
@@ -479,6 +505,18 @@ public final class SignalsReceiver {
 
         public Builder tls(Map<String, String> tls) { this.tls = tls; return this; }
         public Builder headers(Supplier<Map<String, String>> headers) { this.headers = headers; return this; }
+
+        /**
+         * Sends every request to the transmitter through this transport
+         * instead of a plain HTTP call. Use the relying party's
+         * {@code transmitterTransport(scope)} so DPoP-bound tokens carry
+         * proofs.
+         *
+         * @param transport the transport
+         * @return this builder
+         */
+        public Builder transport(Transport transport) { this.transport = transport; return this; }
+
         public Builder eventsRequested(List<String> events) { this.eventsRequested = events; return this; }
         public Builder endOn(List<String> events) { this.endOn = events; return this; }
         public Builder sessionIndex(MemorySessionIndex index) { this.index = index; return this; }

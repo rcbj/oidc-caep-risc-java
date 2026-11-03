@@ -50,12 +50,16 @@ public final class Discovery {
         for (String key : List.of("userinfo_endpoint", "end_session_endpoint", "pushed_authorization_request_endpoint", "revocation_endpoint")) {
             if (doc.containsKey(key) && doc.get(key) != null) metadata.put(key, mustBeUrl(doc.get(key), key));
         }
-        for (String key : List.of("token_endpoint_auth_methods_supported", "code_challenge_methods_supported", "scopes_supported", "grant_types_supported")) {
+        for (String key : List.of("token_endpoint_auth_methods_supported", "code_challenge_methods_supported", "scopes_supported",
+                "grant_types_supported", "dpop_signing_alg_values_supported", "acr_values_supported")) {
             if (doc.containsKey(key) && doc.get(key) != null) {
                 List<Object> items = Jsons.list(doc.get(key));
                 if (items == null) throw new OidcError("discovery", key + " must be an array");
                 metadata.put(key, strings(items));
             }
+        }
+        if (doc.containsKey("require_pushed_authorization_requests") && doc.get("require_pushed_authorization_requests") != null) {
+            metadata.put("require_pushed_authorization_requests", doc.get("require_pushed_authorization_requests") == Boolean.TRUE);
         }
         if (doc.containsKey("authorization_response_iss_parameter_supported") && doc.get("authorization_response_iss_parameter_supported") != null) {
             metadata.put("authorization_response_iss_parameter_supported", doc.get("authorization_response_iss_parameter_supported") == Boolean.TRUE);
@@ -101,17 +105,53 @@ public final class Discovery {
         return List.of(inserted, appended);
     }
 
+    /**
+     * The ID token algorithms this client accepts: the asymmetric algorithms
+     * the provider advertises. Kept for callers of the earlier API; the
+     * relying party uses {@link #idTokenAlgorithms(List, String, List)}.
+     *
+     * @param advertised the provider's {@code id_token_signing_alg_values_supported}
+     * @param pinned one algorithm to require, or null
+     * @return the accepted algorithms
+     */
     public static List<String> idTokenAlgorithms(List<?> advertised, String pinned) {
         List<String> names = new ArrayList<>();
         if (advertised != null) for (Object item : advertised) names.add(String.valueOf(item));
+        List<String> allowed = new ArrayList<>();
+        for (String alg : names) if (ASYMMETRIC_JWS_ALGS.contains(alg)) allowed.add(alg);
+        return idTokenAlgorithms(advertised, pinned, allowed.isEmpty() ? List.of("RS256") : allowed);
+    }
+
+    /**
+     * The ID token algorithms this client accepts. A pinned algorithm
+     * ({@code idTokenSignedResponseAlg}) is the only one accepted. Otherwise
+     * the allow-list ({@code idTokenSigningAlgs}, default {@code ["RS256"]})
+     * is narrowed to what the provider advertises. {@code none} is never
+     * accepted, and a symmetric algorithm only when it is named.
+     *
+     * @param advertised the provider's {@code id_token_signing_alg_values_supported}
+     * @param pinned one algorithm to require, or null
+     * @param allowList the algorithms the configuration allows
+     * @return the accepted algorithms, never empty
+     */
+    public static List<String> idTokenAlgorithms(List<?> advertised, String pinned, List<String> allowList) {
+        List<String> names = new ArrayList<>();
+        if (advertised != null) for (Object item : advertised) names.add(String.valueOf(item));
         if (pinned != null && !pinned.isEmpty()) {
+            if ("none".equalsIgnoreCase(pinned)) throw new OidcError("config", "idTokenSignedResponseAlg must not be none");
+            if (JwsCrypto.alg(pinned) == null) throw new OidcError("config", "idTokenSignedResponseAlg " + pinned + " cannot be verified by this library");
             if (!names.contains(pinned)) throw new OidcError("discovery", "the provider does not advertise id_token alg " + pinned);
             return List.of(pinned);
         }
+        List<String> wanted = allowList == null || allowList.isEmpty() ? List.of("RS256") : allowList;
         List<String> allowed = new ArrayList<>();
-        for (String alg : names) if (ASYMMETRIC_JWS_ALGS.contains(alg)) allowed.add(alg);
+        for (String alg : wanted) {
+            if ("none".equalsIgnoreCase(alg) || JwsCrypto.alg(alg) == null) continue;
+            if (names.contains(alg) && !allowed.contains(alg)) allowed.add(alg);
+        }
         if (allowed.isEmpty()) {
-            throw new OidcError("discovery", "none of the provider's ID token algorithms can be verified (" + String.join(", ", names) + ")");
+            throw new OidcError("discovery", "the provider advertises no ID token algorithm this client allows (allowed "
+                    + String.join(", ", wanted) + "; advertised " + String.join(", ", names) + ")");
         }
         return allowed;
     }

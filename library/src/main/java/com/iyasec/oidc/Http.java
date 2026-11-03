@@ -25,6 +25,7 @@ import java.security.spec.PKCS8EncodedKeySpec;
 import java.time.Duration;
 import java.util.Base64;
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 
 /** One back-channel request. TLS is verified. Redirects are not followed. */
@@ -39,7 +40,43 @@ public final class Http {
 
     private Http() {}
 
-    public record Result(int status, String contentType, String body) {}
+    /**
+     * One answer: the status, the content type, the body as text, and the
+     * response headers.
+     *
+     * @param status the HTTP status
+     * @param contentType the content-type header, or an empty string
+     * @param body the body as UTF-8 text
+     * @param headers the response headers, names as the server sent them
+     */
+    public record Result(int status, String contentType, String body, Map<String, List<String>> headers) {
+        /**
+         * An answer with no response headers.
+         *
+         * @param status the HTTP status
+         * @param contentType the content-type header, or an empty string
+         * @param body the body as UTF-8 text
+         */
+        public Result(int status, String contentType, String body) {
+            this(status, contentType, body, Map.of());
+        }
+
+        /**
+         * The first value of a response header, matched without regard to case.
+         *
+         * @param name the header name
+         * @return the value, or null when the response has no such header
+         */
+        public String header(String name) {
+            if (headers == null || name == null) return null;
+            for (Map.Entry<String, List<String>> entry : headers.entrySet()) {
+                if (name.equalsIgnoreCase(entry.getKey()) && entry.getValue() != null && !entry.getValue().isEmpty()) {
+                    return entry.getValue().get(0);
+                }
+            }
+            return null;
+        }
+    }
 
     public static Result send(String url, String method, Map<String, String> headers, byte[] body, Map<String, String> tls, String code) {
         URI uri;
@@ -68,7 +105,7 @@ public final class Http {
             byte[] raw = response.body() == null ? new byte[0] : response.body();
             if (raw.length > MAX_BYTES) throw new OidcError(code, url + " answered more than " + MAX_BYTES + " bytes");
             String type = response.headers().firstValue("content-type").orElse("");
-            return new Result(response.statusCode(), type, new String(raw, StandardCharsets.UTF_8));
+            return new Result(response.statusCode(), type, new String(raw, StandardCharsets.UTF_8), response.headers().map());
         } catch (OidcError err) {
             throw err;
         } catch (HttpTimeoutException err) {
