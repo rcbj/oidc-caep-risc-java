@@ -28,11 +28,11 @@
     <plugins>
       <plugin>
         <artifactId>maven-compiler-plugin</artifactId>
-        <version>3.11.0</version>
+        <version>3.16.0</version>
       </plugin>
       <plugin>
         <artifactId>maven-surefire-plugin</artifactId>
-        <version>3.2.5</version>
+        <version>3.6.1</version>
         <configuration>
           <!-- TrustChainTest runs scripts/ and reads demo/oidc.json from the repository root. -->
           <workingDirectory>${project.basedir}/..</workingDirectory>
@@ -41,14 +41,14 @@
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>exec-maven-plugin</artifactId>
-        <version>3.1.0</version>
+        <version>3.6.4</version>
         <configuration>
           <mainClass>com.iyasec.oidc.demo.Demo</mainClass>
         </configuration>
       </plugin>
       <plugin>
         <artifactId>maven-shade-plugin</artifactId>
-        <version>3.5.1</version>
+        <version>3.6.2</version>
         <executions>
           <execution>
             <phase>package</phase>
