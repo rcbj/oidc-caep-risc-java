@@ -7,7 +7,7 @@
        The demo is the sibling module ../demo, which is never published. -->
   <groupId>com.iyasec</groupId>
   <artifactId>oidc-caep-risc</artifactId>
-  <version>0.1.0</version>
+  <version>0.2.0</version>
   <name>oidc-caep-risc</name>
   <description>Server-side OpenID Connect confidential client: Authorization Code with PKCE, client authentication, and a CAEP and RISC Shared Signals receiver.</description>
   <url>https://github.com/rcbj/oidc-caep-risc-java</url>

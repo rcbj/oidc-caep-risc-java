@@ -8,7 +8,7 @@ The license is MIT. `develop` and `main` are the same commit. A pull request mer
 
 ## Usage
 
-Java 17. Group `com.iyasec`, artifact `oidc-caep-risc`, version `0.1.0`.
+Java 17. Group `com.iyasec`, artifact `oidc-caep-risc`, version `0.2.0`.
 
 ```java
 RelyingParty rp = RelyingParty.fromFile("oidc.json");
