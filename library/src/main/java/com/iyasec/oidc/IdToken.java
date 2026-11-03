@@ -45,7 +45,11 @@ public final class IdToken {
         if (header.containsKey("crit") && header.get("crit") != null) {
             throw new OidcError("validation", "the ID token has a crit header this client does not understand");
         }
+        boolean strict = checks.get("requireTypAndAtHash") != Boolean.FALSE;
         String typ = header.get("typ") == null ? "" : String.valueOf(header.get("typ")).toLowerCase(Locale.ROOT);
+        if (strict && typ.isEmpty()) {
+            throw new OidcError("validation", "the ID token header has no typ (JWT is required)");
+        }
         if (!typ.isEmpty() && ((!typ.equals("jwt") && !typ.equals("application/jwt")) || NOT_ID_TOKEN.contains(typ))) {
             throw new OidcError("validation", "the ID token typ is " + header.get("typ") + ", not an ID token");
         }
@@ -74,6 +78,9 @@ public final class IdToken {
         double tolerance = checks.get("clockToleranceSec") instanceof Number number ? number.doubleValue() : 0;
         if (!(payload.get("exp") instanceof Number exp)) throw new OidcError("validation", "the ID token was refused: exp is missing");
         if (exp.doubleValue() + tolerance < now) throw new OidcError("validation", "the ID token was refused: exp expired");
+        if (payload.get("iat") instanceof Number iat && iat.doubleValue() - tolerance > now) {
+            throw new OidcError("validation", "the ID token was refused: iat is in the future");
+        }
         if (payload.get("nbf") instanceof Number nbf && nbf.doubleValue() - tolerance > now) {
             throw new OidcError("validation", "the ID token was refused: nbf is in the future");
         }
@@ -99,7 +106,12 @@ public final class IdToken {
         if (checks.get("previousSub") != null && !String.valueOf(checks.get("previousSub")).equals(payload.get("sub"))) {
             throw new OidcError("validation", "the refreshed ID token is for a different subject");
         }
-        if (truthy(checks.get("accessToken"))) checkHash(payload.get("at_hash"), String.valueOf(checks.get("accessToken")), alg, "at_hash");
+        if (truthy(checks.get("accessToken"))) {
+            if (strict && payload.get("at_hash") == null) {
+                throw new OidcError("validation", "the token response carries an access token and the ID token has no at_hash");
+            }
+            checkHash(payload.get("at_hash"), String.valueOf(checks.get("accessToken")), alg, "at_hash");
+        }
         if (truthy(checks.get("code"))) checkHash(payload.get("c_hash"), String.valueOf(checks.get("code")), alg, "c_hash");
         if (checks.get("maxAge") != null) {
             if (!(payload.get("auth_time") instanceof Number authTime)) {

@@ -143,6 +143,8 @@ public final class Demo {
             row(rows, "Email", login.email);
             row(rows, "Name", login.name);
             row(rows, "Username", login.preferredUsername);
+            row(rows, "Token type", login.tokenType);
+            row(rows, "UserInfo", userinfo(party, session));
             String body = "<h1>Signed in as " + esc(who) + "</h1><table class=\"facts\">" + rows
                     + "</table><p><small>The access token and the refresh token stay in this process. This page does not show them.</small></p><p><small>Shared Signals: "
                     + esc(receiverState) + "</small></p><form method=\"post\" action=\"/logout\"><button type=\"submit\">Sign out</button></form>";
@@ -169,6 +171,10 @@ public final class Demo {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("signedIn", session != null);
         body.put("subject", subject);
+        if (session != null) {
+            body.put("tokenType", session.login.tokenType);
+            body.put("userinfo", session.userinfo);
+        }
         body.put("receiver", receiverState);
         body.put("events", List.copyOf(LIVE_EVENTS));
         send(exchange, 200, Jsons.write(body).getBytes(StandardCharsets.UTF_8), "application/json", null);
@@ -190,6 +196,7 @@ public final class Demo {
         txn.put("nonce", request.nonce);
         txn.put("codeVerifier", request.codeVerifier);
         txn.put("redirectUri", request.redirectUri);
+        if (request.acrValues != null) txn.put("acrValues", request.acrValues);
         redirect(exchange, 302, request.url, List.of(cookie("oidc_txn", seal(txn), "/callback", 600)));
     }
 
@@ -205,8 +212,11 @@ public final class Demo {
             transaction.nonce = String.valueOf(txn.get("nonce"));
             transaction.codeVerifier = String.valueOf(txn.get("codeVerifier"));
             transaction.redirectUri = String.valueOf(txn.get("redirectUri"));
-            RelyingParty.Login login = party.complete(query, transaction);
+            if (txn.get("acrValues") instanceof String acr) transaction.acrValues = acr;
             String sid = random();
+            // The relying party keeps this sign-in's tokens under the same
+            // identifier as the local session (its session cache).
+            RelyingParty.Login login = party.complete(query, transaction, sid);
             SESSIONS.put(sid, new Session(sid, login, System.currentTimeMillis() + 8L * 3600 * 1000));
             if (receiver != null) receiver.track(MemorySessionIndex.trackedFromLogin(sid, login, null));
             redirect(exchange, 303, "/", List.of(clear, cookie("oidc_session", sid, "/", 8 * 3600)));
@@ -222,6 +232,7 @@ public final class Demo {
         Session session = session(exchange);
         if (session != null) {
             SESSIONS.remove(session.id);
+            if (rp != null) rp.removeSession(session.id);
             if (receiver != null) receiver.untrack(session.id);
         }
         redirect(exchange, 303, "/", List.of(cookie("oidc_session", "", "/", 0)));
@@ -260,9 +271,14 @@ public final class Demo {
         if (receiver != null) return;
         Map<String, Object> ssf = (Map<String, Object>) party.config().get("ssf");
         long interval = ssf.get("pollIntervalMs") instanceof Number number && number.longValue() != 0 ? number.longValue() : 5000;
-        SignalsReceiver created = SignalsReceiver.builder(String.valueOf(ssf.get("transmitter")), (ids, event) -> ids.forEach(SESSIONS::remove))
+        SignalsReceiver created = SignalsReceiver.builder(String.valueOf(ssf.get("transmitter")), (ids, event) -> ids.forEach(id -> {
+                    SESSIONS.remove(id);
+                    party.removeSession(id);
+                }))
                 .tls(party.tls())
-                .headers(() -> Map.of("authorization", "Bearer " + party.clientCredentials("ssf.manage").accessToken))
+                // Every call to the transmitter presents a client credentials
+                // token, with a DPoP proof when the token is DPoP-bound.
+                .transport(party.transmitterTransport("ssf.manage"))
                 .description("oidc-caep-risc demo (" + party.config().get("clientId") + ")")
                 .pollIntervalMs(interval)
                 .build();
@@ -277,6 +293,24 @@ public final class Demo {
             receiverState = "not running: " + err;
             System.err.println("ssf: the receiver did not start: " + err);
         }
+    }
+
+    /**
+     * Calls UserInfo with the session's access token from the relying party's
+     * session cache (refreshed when it is close to expiry), so the page shows
+     * a DPoP-bound resource request working.
+     */
+    private static String userinfo(RelyingParty party, Session session) {
+        if (party == null) return "not called";
+        try {
+            RelyingParty.Credentials token = party.sessionAccessToken(session.id);
+            Map<String, Object> claims = party.userinfo(token.accessToken, token.tokenType, session.login.subject);
+            session.userinfo = "ok (" + token.tokenType + ", " + claims.size() + " claims)";
+        } catch (Exception err) {
+            Caught.warn(err);
+            session.userinfo = "failed: " + (err instanceof OidcError oidc ? oidc.code + ": " + oidc.getMessage() : String.valueOf(err));
+        }
+        return session.userinfo;
     }
 
     @SuppressWarnings("unchecked")
@@ -495,6 +529,7 @@ public final class Demo {
         final String id;
         final RelyingParty.Login login;
         final long expires;
+        volatile String userinfo = "not called yet";
 
         Session(String id, RelyingParty.Login login, long expires) {
             this.id = id;
