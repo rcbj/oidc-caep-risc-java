@@ -134,6 +134,34 @@ class SignalsReceiverTest {
         receiver.stop();
     }
 
+    @Test
+    void sendsEveryTransmitterCallThroughTheTransport() throws Exception {
+        List<String> sent = new CopyOnWriteArrayList<>();
+        SignalsReceiver receiver = SignalsReceiver.builder(stub.base, (ids, event) -> {})
+                .transport((method, url, headers, body) -> {
+                    sent.add(method + " " + url.substring(stub.base.length()));
+                    Map<String, String> withToken = new LinkedHashMap<>(headers);
+                    withToken.put("authorization", "Bearer app-token");
+                    return Http.send(url, method, withToken, body, Map.of(), "ssf");
+                })
+                .pollIntervalMs(60_000)
+                .log(new SignalsReceiver.Log() {
+                    public void info(String message) {}
+                    public void warn(String message) {}
+                    public void error(String message) {}
+                })
+                .build();
+        receiver.start();
+        receiver.stop();
+        receiver.pollOnce();
+        receiver.verify("t");
+        assertTrue(sent.contains("GET /.well-known/ssf-configuration"), String.valueOf(sent));
+        assertTrue(sent.contains("GET /jwks"), String.valueOf(sent));
+        assertTrue(sent.contains("GET /ssf/stream"), String.valueOf(sent));
+        assertTrue(sent.stream().anyMatch(line -> line.startsWith("POST /ssf/poll/")), String.valueOf(sent));
+        assertTrue(sent.contains("POST /ssf/verify"), String.valueOf(sent));
+    }
+
     static Map<String, Object> session(String localId, String person, String sid) {
         Map<String, Object> session = new LinkedHashMap<>();
         session.put("localId", localId);

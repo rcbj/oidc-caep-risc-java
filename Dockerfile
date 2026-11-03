@@ -30,7 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl
 WORKDIR /app
 # The demo module's runnable jar (the demo, the library and its dependencies),
 # under the name the image has always run.
-COPY --from=build /src/demo/target/oidc-caep-risc-demo-0.1.0.jar /app/oidc-caep-risc.jar
+COPY --from=build /src/demo/target/oidc-caep-risc-demo-0.2.0.jar /app/oidc-caep-risc.jar
 COPY scripts scripts
 # The demo, and with it tlsCa's file: demo/generated/idp-ca.pem, the iya-sts
 # listener CA trust chain scripts/configure_iya_sts.py saved. The image trusts

@@ -32,6 +32,19 @@ RelyingParty.Login who = rp.complete(query, request);
 
 Keep the transaction (`state`, nonce, code verifier) until the browser returns. Tokens stay in this process.
 
+## Client profile (issue #25)
+
+`Config.normalize` holds the defaults and checks, and `RelyingParty.create` runs it, so a map built in code gets the same rules as a file: `par` and `dpop` `auto`, `clockToleranceSec` 30, `maxIdTokenAgeSec` 600, `idTokenSigningAlgs` `["RS256"]`, `requireIdTokenTypAndAtHash` true, and the redirect-URI rule (https, or http on `localhost`, `127.0.0.1` or `[::1]`; `allowInsecure` does not relax it). A per-request redirect URI is held to the same rule. The JSON keys and defaults match the six sibling libraries; change them in all seven or none.
+
+- DPoP is `Dpop.java`: an ES256 key generated at creation (or `dpopKey`, PKCS#8 or SEC 1 PEM; the public point is derived from the private scalar), proofs, and the latest `DPoP-Nonce` per origin. `RelyingParty.form()` signs a proof for PAR and every token request and retries one 400 `use_dpop_nonce`. `RelyingParty.resource()` presents a token (`DPoP` with `ath`, or `Bearer`) and retries one 401 `use_dpop_nonce`; `userinfo()` and `transmitterTransport(scope)` use it. `token()` refuses a `token_type` that does not match whether a proof was sent. `Http.Result` carries the response headers for this.
+- `SignalsReceiver.Builder.transport()` routes every transmitter call; without it the receiver sends plain requests with the `headers` supplier, as before.
+- `acr` is checked in `complete()` against `Transaction.acrValues`; `refresh()` does not check it.
+- `require_pushed_authorization_requests` is kept by `Discovery`; `par: never` then fails at creation.
+- `Discovery.idTokenAlgorithms(advertised, pinned, allowList)` narrows the allow-list to what the provider advertises; empty is an error at creation.
+- `IdToken.validate` takes `requireTypAndAtHash`; UserInfo JWTs pass false.
+- The session cache is `SessionStore` (`MemorySessionStore` by default) holding `SessionTokens`; `sessionAccessToken()` refreshes under a per-session lock when fewer than 30 seconds remain, and removes the entry when the refresh fails.
+- The demo keeps each sign-in's tokens under its local session id, calls UserInfo through the cache, removes the entry on sign-out and on a session-ending event, and uses `transmitterTransport("ssf.manage")`. `scripts/configure_iya_sts.py` registers `oauthIdTokenSignedResponseAlg` RS256.
+
 ## Errors
 
 `Caught.error` records a caught exception through `java.lang.System.Logger`, including the stack, and the method then throws the `OidcError` it already threw. The caught exception is the cause. `Caught.warn` is the same record when the method recovers and does not throw: a later signing key, a poll retry, a false verification, sign-out cleanup, or a handler that must still acknowledge the Security Event Token. A `catch (OidcError)` that only throws that error again is not logged a second time.

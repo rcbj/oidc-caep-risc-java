@@ -8,7 +8,7 @@ The license is MIT. `develop` and `main` are the same commit. A pull request mer
 
 ## Usage
 
-Java 17. Group `com.iyasec`, artifact `oidc-caep-risc`, version `0.1.0`.
+Java 17. Group `com.iyasec`, artifact `oidc-caep-risc`, version `0.2.0`.
 
 ```java
 RelyingParty rp = RelyingParty.fromFile("oidc.json");
@@ -18,6 +18,51 @@ RelyingParty.Login who = rp.complete(query, request);
 ```
 
 Tokens stay in this process. Keep the transaction until the browser returns.
+
+## Settings and defaults
+
+These defaults and checks apply whether the relying party is created from a file (`RelyingParty.fromFile`, `Config.resolveConfig`) or directly from a map (`RelyingParty.create`, which runs `Config.normalize`). The same JSON keys and defaults are used by the six sibling libraries.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `par` | `auto` | `auto` pushes the authorization request when the provider has a pushed authorization endpoint, and always when it sets `require_pushed_authorization_requests`. `always` fails at creation without the endpoint. `never` fails at creation when the provider requires PAR. |
+| `dpop` | `auto` | RFC 9449. `auto` uses DPoP when the provider's `dpop_signing_alg_values_supported` includes ES256. `always` fails at creation otherwise. `never` sends no proofs. |
+| `dpopKey` | unset | A P-256 private key in PEM (PKCS#8 or SEC 1), as the PEM itself, `file:<path>`, `env:<NAME>` or a path. Unset, the key is generated when the relying party is created and held in memory only. Name one when several processes share sessions. |
+| `idTokenSigningAlgs` | `["RS256"]` | The ID token algorithms accepted, narrowed to the ones the provider advertises. `none` is refused. A symmetric algorithm (HS256, HS384, HS512) is accepted only when it is named here. |
+| `idTokenSignedResponseAlg` | unset | One pinned algorithm. It must be advertised, and it replaces the list above. |
+| `requireIdTokenTypAndAtHash` | `true` | The ID token header must carry `typ` `JWT` or `application/jwt`, and when the token response has an access token the ID token must carry a matching `at_hash`. `false` checks both only when present. |
+| `acrValues` | unset | `acr_values` for every authorization request (a string or a list). `AuthorizeOptions.acrValues` overrides it per request. |
+| `clockToleranceSec` | 30 | Clock skew allowed on `exp`, `nbf` and `iat`. An `iat` more than this far in the future is refused. |
+| `maxIdTokenAgeSec` | 600 | The oldest `iat` accepted. |
+
+`redirectUri`, `postLogoutRedirectUri` and a per-request `AuthorizeOptions.redirectUri` must be https, or http on a loopback host (`localhost`, `127.0.0.1`, `[::1]`). `allowInsecure` does not relax this rule; it still allows an http provider.
+
+## DPoP
+
+When DPoP is in use, a proof (`typ` `dpop+jwt`, the public `jwk`, `jti`, `htm`, `htu` without query or fragment, `iat`) goes on the PAR request and on every token request (code, refresh and client credentials). The authorization request carries `dpop_jkt`, in the PAR body when PAR is used. The token response's `token_type` must be `DPoP`; without DPoP it must be `Bearer`; a mismatch is refused.
+
+A DPoP token is presented as `Authorization: DPoP` with a proof that carries `ath`: `userinfo(accessToken, tokenType, sub)`, `resource(method, url, headers, body, accessToken, tokenType)`, and every call the Shared Signals receiver makes through `transmitterTransport(scope)`. A 400 `use_dpop_nonce` from the authorization server, or a 401 whose `WWW-Authenticate` is `DPoP error="use_dpop_nonce"` from a resource server, is retried once with the `DPoP-Nonce` it gave. The latest nonce is kept per server origin and sent on the next proof.
+
+```java
+SignalsReceiver receiver = SignalsReceiver.builder(transmitter, onEnd)
+        .tls(rp.tls())
+        .transport(rp.transmitterTransport("ssf.manage"))
+        .build();
+```
+
+## acr
+
+When `acr_values` is requested, the ID token from the code exchange must carry `acr`, and it must be one of the requested values. The values are kept in the transaction (`Transaction.acrValues`; keep it with the state). A refresh does not check `acr` again.
+
+## The sign-in token cache
+
+`complete(query, transaction, sessionId)` keeps the sign-in's tokens under the application's session identifier. `complete(query, transaction)` keeps them under a new random handle, returned as `Login.sessionId`. `sessionAccessToken(sessionId)` returns the cached access token while it has more than 30 seconds left, and otherwise refreshes it (with a DPoP proof when DPoP is in use) and updates the cache. A failed refresh removes the entry and throws `OidcError` with code `session`. `removeSession(sessionId)` clears the entry: call it on sign-out and from the receiver's `onEndSessions` callback (a CAEP `session-revoked`). The default store is `MemorySessionStore`; `rp.sessionStore(store)` installs any `SessionStore`, for example one shared by several processes.
+
+```java
+RelyingParty.Login who = rp.complete(query, request, localSessionId);
+RelyingParty.Credentials token = rp.sessionAccessToken(localSessionId);
+Map<String, Object> claims = rp.userinfo(token.accessToken, token.tokenType, who.subject);
+```
 
 ## Errors
 
@@ -41,7 +86,7 @@ The suite runs in a container. The tests build an in-process stub provider and a
 |---|---|
 | `library/` | The library, `com.iyasec:oidc-caep-risc`, nothing else in its jar. `RelyingParty`, `ClientAuth`, `IdToken`, `Discovery`, `Config`, `ssf/` in `library/src/main/java/com/iyasec/oidc`; JUnit 5 ports of the Node relying-party and Shared Signals tests in `library/src/test/java`. |
 | `demo/` | The demo module, never published: `com.iyasec.oidc.demo.Demo`, config `demo/oidc.json`. |
-| `scripts/configure_iya_sts.py` | Registers the confidential client on iya-sts. The Java repo runs this Python registrar. Loopback redirects follow the running container's `PORT`, then the shell `PORT`. |
+| `scripts/configure_iya_sts.py` | Registers the confidential client on iya-sts with `id_token_signed_response_alg` RS256. The Java repo runs this Python registrar. Loopback redirects follow the running container's `PORT`, then the shell `PORT`. |
 | `Dockerfile`, `docker-compose.yml` | The demo image. Compose uses host networking. |
 
 ## The iya-sts trust chain (`tlsCa`)
@@ -62,7 +107,7 @@ The container entrypoint also refreshes the file from the provider at start, bec
 docker compose up --build
 ```
 
-`GET /healthz` returns `ok`. `GET /` is the page. `GET /login` starts `authorize` and redirects. `GET /callback` completes the code exchange. `POST /logout` signs the local session out. `GET /live-status` is JSON for the sign-in and the Shared Signals events this process has accepted. It does not include tokens.
+`GET /healthz` returns `ok`. `GET /` is the page. `GET /login` starts `authorize` and redirects. `GET /callback` completes the code exchange. `POST /logout` signs the local session out. `GET /live-status` is JSON for the sign-in and the Shared Signals events this process has accepted. It does not include tokens. When signed in it also reports the token type and the last UserInfo result. The page calls UserInfo with the session's token from the relying party's session cache, with a DPoP proof when the token is DPoP-bound. The receiver calls the transmitter through `transmitterTransport("ssf.manage")`. Sign-out and a session-ending Shared Signals event remove the session's cache entry.
 
 `docker-compose.yml` sets `network_mode: host`. The image sets `ENV PORT=3000`. The health check calls `http://127.0.0.1:${PORT}/healthz`. The running container's `PORT` wins over the shell's when `scripts/configure_iya_sts.py` registers the application.
 

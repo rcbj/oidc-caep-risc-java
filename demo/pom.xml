@@ -7,7 +7,7 @@
   <parent>
     <groupId>com.iyasec</groupId>
     <artifactId>oidc-caep-risc-build</artifactId>
-    <version>0.1.0</version>
+    <version>0.2.0</version>
   </parent>
   <artifactId>oidc-caep-risc-demo</artifactId>
   <name>oidc-caep-risc demo</name>

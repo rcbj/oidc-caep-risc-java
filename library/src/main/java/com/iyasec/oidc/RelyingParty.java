@@ -11,10 +11,15 @@ import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+import com.iyasec.oidc.ssf.SignalsReceiver;
 
 /** A confidential OpenID Connect relying party. Tokens stay in this process. */
 public final class RelyingParty {
     private static final List<String> FRONT = List.of("access_token", "id_token", "refresh_token", "token_type");
+    /** A cached session access token is used while it has more than this many milliseconds left. */
+    public static final long SESSION_TOKEN_MARGIN_MS = 30_000;
 
     private final Map<String, Object> config;
     private final Map<String, Object> metadata;
@@ -22,14 +27,19 @@ public final class RelyingParty {
     private final List<String> algorithms;
     private List<Map<String, Object>> jwks;
     private final Map<String, Long> usedCodes = new LinkedHashMap<>();
-    private CachedCredentials clientCredentials;
+    private volatile CachedCredentials clientCredentials;
+    private final Dpop dpop;
+    private volatile SessionStore sessions = new MemorySessionStore();
+    private final Map<String, Object> sessionLocks = new ConcurrentHashMap<>();
 
-    private RelyingParty(Map<String, Object> config, Map<String, Object> metadata, PrivateKey key) {
+    private RelyingParty(Map<String, Object> config, Map<String, Object> metadata, PrivateKey key, Dpop dpop) {
         this.config = config;
         this.metadata = metadata;
         this.key = key;
+        this.dpop = dpop;
         this.algorithms = Discovery.idTokenAlgorithms(list(metadata.get("id_token_signing_alg_values_supported")),
-                config.get("idTokenSignedResponseAlg") == null ? null : String.valueOf(config.get("idTokenSignedResponseAlg")));
+                config.get("idTokenSignedResponseAlg") == null ? null : String.valueOf(config.get("idTokenSignedResponseAlg")),
+                strings(config.get("idTokenSigningAlgs")));
     }
 
     public Map<String, Object> config() {
@@ -44,8 +54,17 @@ public final class RelyingParty {
         return create(Config.readConfigFile(path));
     }
 
-    public static RelyingParty create(Map<String, Object> config) {
-        if (config == null) throw new OidcError("config", "the configuration must be a JSON object");
+    /**
+     * Creates a relying party from a configuration map. The defaults and
+     * checks a configuration file gets ({@link Config#normalize}) apply here
+     * too.
+     *
+     * @param given the configuration
+     * @return the relying party
+     */
+    public static RelyingParty create(Map<String, Object> given) {
+        if (given == null) throw new OidcError("config", "the configuration must be a JSON object");
+        Map<String, Object> config = Config.normalize(given);
         String method = String.valueOf(config.get("tokenEndpointAuthMethod"));
         if ("private_key_jwt".equals(method) && !text(config.get("privateKeyPem"))) {
             throw new OidcError("config", "private_key_jwt needs a private key");
@@ -83,10 +102,74 @@ public final class RelyingParty {
         if (!methods.isEmpty() && !methods.contains(method)) throw new OidcError("discovery", "the provider does not advertise " + method);
         List<String> challenges = strings(metadata.get("code_challenge_methods_supported"));
         if (!challenges.isEmpty() && !challenges.contains("S256")) throw new OidcError("discovery", "the provider does not advertise PKCE S256");
+        boolean parRequired = metadata.get("require_pushed_authorization_requests") == Boolean.TRUE;
+        String parMode = String.valueOf(config.get("par"));
+        if (parRequired && "never".equals(parMode)) {
+            throw new OidcError("config", "par is never, and the provider requires pushed authorization requests");
+        }
+        if (("always".equals(parMode) || parRequired) && !text(metadata.get("pushed_authorization_request_endpoint"))) {
+            throw new OidcError("discovery", "pushed authorization requests are required, and the provider has no pushed authorization endpoint");
+        }
         PrivateKey key = text(config.get("privateKeyPem"))
                 ? JwsCrypto.loadPrivateKey(String.valueOf(config.get("privateKeyPem")), config.get("privateKeyAlg") == null ? "RS256" : String.valueOf(config.get("privateKeyAlg")))
                 : null;
-        return new RelyingParty(config, metadata, key);
+        return new RelyingParty(config, metadata, key, dpopFor(config, metadata));
+    }
+
+    private static Dpop dpopFor(Map<String, Object> config, Map<String, Object> metadata) {
+        String mode = String.valueOf(config.get("dpop"));
+        if ("never".equals(mode)) return null;
+        boolean advertised = metadata.get("dpop_signing_alg_values_supported") instanceof List<?>;
+        List<String> algs = strings(metadata.get("dpop_signing_alg_values_supported"));
+        if (!advertised || !algs.contains(Dpop.ALG)) {
+            if ("always".equals(mode)) {
+                throw new OidcError("discovery", advertised
+                        ? "dpop is always, and the provider does not accept ES256 proofs (" + String.join(", ", algs) + ")"
+                        : "dpop is always, and the provider does not advertise dpop_signing_alg_values_supported");
+            }
+            return null;
+        }
+        return text(config.get("dpopKey")) ? Dpop.fromPem(String.valueOf(config.get("dpopKey"))) : Dpop.generate();
+    }
+
+    /**
+     * Whether this relying party sends DPoP proofs (RFC 9449).
+     *
+     * @return true when DPoP is in use
+     */
+    public boolean usesDpop() {
+        return dpop != null;
+    }
+
+    /**
+     * The DPoP signer, when DPoP is in use.
+     *
+     * @return the signer, or null
+     */
+    public Dpop dpop() {
+        return dpop;
+    }
+
+    /**
+     * The store the sign-in token cache uses.
+     *
+     * @return the store
+     */
+    public SessionStore sessionStore() {
+        return sessions;
+    }
+
+    /**
+     * Replaces the sign-in token cache's store, for example with one shared
+     * by several processes. Sessions in the earlier store are not copied.
+     *
+     * @param store the new store
+     * @return this relying party
+     */
+    public RelyingParty sessionStore(SessionStore store) {
+        if (store == null) throw new OidcError("config", "the session store must not be null");
+        this.sessions = store;
+        return this;
     }
 
     public Map<String, String> tls() {
@@ -99,7 +182,8 @@ public final class RelyingParty {
 
     public Transaction authorize(AuthorizeOptions options) {
         AuthorizeOptions opts = options == null ? new AuthorizeOptions() : options;
-        String redirectUri = opts.redirectUri == null ? String.valueOf(config.get("redirectUri")) : opts.redirectUri;
+        String redirectUri = opts.redirectUri == null ? String.valueOf(config.get("redirectUri")) : Config.checkRedirect(opts.redirectUri, "redirectUri");
+        String acrValues = text(opts.acrValues) ? opts.acrValues.trim().replaceAll("\\s+", " ") : string(config.get("acrValues"));
         String scope = opts.scope == null ? String.valueOf(config.get("scopes")) : opts.scope;
         String state = Codec.randomToken();
         String nonce = Codec.randomToken();
@@ -116,7 +200,8 @@ public final class RelyingParty {
         if (text(opts.prompt)) params.put("prompt", opts.prompt);
         if (text(opts.loginHint)) params.put("login_hint", opts.loginHint);
         if (opts.maxAge != null) params.put("max_age", String.valueOf(opts.maxAge));
-        if (text(opts.acrValues)) params.put("acr_values", opts.acrValues);
+        if (text(acrValues)) params.put("acr_values", acrValues);
+        if (dpop != null) params.put("dpop_jkt", dpop.thumbprint());
         Transaction transaction = new Transaction();
         transaction.state = state;
         transaction.nonce = nonce;
@@ -124,11 +209,13 @@ public final class RelyingParty {
         transaction.redirectUri = redirectUri;
         transaction.maxAge = opts.maxAge;
         transaction.expectedSub = text(opts.expectedSub) ? opts.expectedSub : null;
+        transaction.acrValues = text(acrValues) ? acrValues : null;
         String par = string(metadata.get("pushed_authorization_request_endpoint"));
         String mode = String.valueOf(config.get("par"));
-        boolean usePar = "always".equals(mode) || ("auto".equals(mode) && par != null);
-        if ("always".equals(mode) && par == null) {
-            throw new OidcError("discovery", "par is always, and the provider has no pushed authorization endpoint");
+        boolean required = metadata.get("require_pushed_authorization_requests") == Boolean.TRUE;
+        boolean usePar = "always".equals(mode) || ("auto".equals(mode) && (par != null || required));
+        if (usePar && par == null) {
+            throw new OidcError("discovery", "pushed authorization requests are required, and the provider has no pushed authorization endpoint");
         }
         if (usePar && par != null) {
             Map<String, Object> pushed = form(par, params);
@@ -145,7 +232,29 @@ public final class RelyingParty {
         return transaction;
     }
 
+    /**
+     * Completes a sign-in and keeps its tokens in the session cache under a
+     * new random handle, returned as {@link Login#sessionId}.
+     *
+     * @param callback the query parameters of the redirect back
+     * @param transaction the transaction {@link #authorize()} returned
+     * @return the sign-in
+     */
     public Login complete(Map<String, ?> callback, Transaction transaction) {
+        return complete(callback, transaction, null);
+    }
+
+    /**
+     * Completes a sign-in and keeps its tokens in the session cache under the
+     * application's session identifier.
+     *
+     * @param callback the query parameters of the redirect back
+     * @param transaction the transaction {@link #authorize()} returned
+     * @param sessionId the application's session identifier, or null for a
+     *        new random handle
+     * @return the sign-in; {@link Login#sessionId} names its cache entry
+     */
+    public Login complete(Map<String, ?> callback, Transaction transaction, String sessionId) {
         for (String name : FRONT) {
             if (has(callback, name)) {
                 throw new OidcError("validation", name + " was returned on the redirect, and a code-flow client refuses it");
@@ -187,7 +296,88 @@ public final class RelyingParty {
         if (text(transaction.expectedSub) && !transaction.expectedSub.equals(claims.get("sub"))) {
             throw new OidcError("validation", "the provider signed in a different account from the one requested");
         }
-        return loginFrom(tokens, claims);
+        if (text(transaction.acrValues)) {
+            List<String> requested = List.of(transaction.acrValues.trim().split("\\s+"));
+            if (!(claims.get("acr") instanceof String acr) || acr.isEmpty()) {
+                throw new OidcError("validation", "acr_values was requested and the ID token has no acr");
+            }
+            if (!requested.contains(acr)) {
+                throw new OidcError("validation", "the ID token acr " + acr + " is not one of the requested values (" + transaction.acrValues + ")");
+            }
+        }
+        Login login = loginFrom(tokens, claims);
+        login.sessionId = text(sessionId) ? sessionId : Codec.randomToken();
+        sessions.put(login.sessionId, sessionTokens(login));
+        return login;
+    }
+
+    /**
+     * A valid access token for a session in the cache: the cached one while
+     * it has more than 30 seconds left, otherwise one obtained with the
+     * refresh token (with a DPoP proof when DPoP is in use), and the cache is
+     * updated. A failed refresh removes the entry and is refused.
+     *
+     * @param sessionId the session identifier given to, or returned by,
+     *        {@link #complete(Map, Transaction, String)}
+     * @return the access token and its type
+     */
+    public Credentials sessionAccessToken(String sessionId) {
+        if (!text(sessionId)) throw new OidcError("session", "there is no session identifier");
+        Object lock = sessionLocks.computeIfAbsent(sessionId, id -> new Object());
+        synchronized (lock) {
+            SessionTokens cached = sessions.get(sessionId);
+            if (cached == null) {
+                sessionLocks.remove(sessionId, lock);
+                throw new OidcError("session", "there are no tokens for this session");
+            }
+            long now = System.currentTimeMillis();
+            if (cached.expiresAt() == 0 || cached.expiresAt() - now > SESSION_TOKEN_MARGIN_MS) return credentialsOf(cached);
+            if (!text(cached.refreshToken())) {
+                removeSession(sessionId);
+                throw new OidcError("session", "the session's access token has expired and there is no refresh token");
+            }
+            Login previous = new Login();
+            previous.subject = cached.subject();
+            previous.idToken = cached.idToken();
+            previous.claims = new LinkedHashMap<>(Map.of("sub", cached.subject()));
+            Login refreshed;
+            try {
+                refreshed = refresh(cached.refreshToken(), previous);
+            } catch (OidcError err) {
+                Caught.error(err);
+                removeSession(sessionId);
+                throw new OidcError("session", "the session's refresh was refused: " + err.getMessage(), err, err.oauthError);
+            }
+            SessionTokens next = sessionTokens(refreshed);
+            sessions.put(sessionId, next);
+            return credentialsOf(next);
+        }
+    }
+
+    /**
+     * Removes a session's tokens from the cache: on sign-out, and when a CAEP
+     * {@code session-revoked} event ends the session.
+     *
+     * @param sessionId the session identifier
+     */
+    public void removeSession(String sessionId) {
+        if (!text(sessionId)) return;
+        sessions.remove(sessionId);
+        sessionLocks.remove(sessionId);
+    }
+
+    private static SessionTokens sessionTokens(Login login) {
+        return new SessionTokens(login.subject, login.accessToken, login.tokenType, login.refreshToken, login.idToken,
+                login.expiresAt == null ? 0 : login.expiresAt.getTime(), login.scope);
+    }
+
+    private static Credentials credentialsOf(SessionTokens tokens) {
+        Credentials out = new Credentials();
+        out.accessToken = tokens.accessToken();
+        out.tokenType = tokens.tokenType();
+        out.expiresAt = tokens.expiresAt() == 0 ? null : new Date(tokens.expiresAt());
+        out.scope = tokens.scope();
+        return out;
     }
 
     public Login refresh(String refreshToken, Login previous) {
@@ -228,8 +418,9 @@ public final class RelyingParty {
 
     public Credentials clientCredentials(String scope) {
         long now = System.currentTimeMillis();
-        if (clientCredentials != null && clientCredentials.scope.equals(scope) && clientCredentials.until > now) {
-            return clientCredentials.token;
+        CachedCredentials cached = clientCredentials;
+        if (cached != null && cached.scope.equals(scope) && cached.until > now) {
+            return cached.token;
         }
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("grant_type", "client_credentials");
@@ -240,18 +431,40 @@ public final class RelyingParty {
         return minted;
     }
 
+    /**
+     * Calls UserInfo with an access token this relying party obtained (a DPoP
+     * token when DPoP is in use, otherwise a Bearer token).
+     *
+     * @param accessToken the access token
+     * @param expectedSub the ID token's subject
+     * @return the claims
+     */
     public Map<String, Object> userinfo(String accessToken, String expectedSub) {
+        return userinfo(accessToken, dpop != null ? "DPoP" : "Bearer", expectedSub);
+    }
+
+    /**
+     * Calls UserInfo. A DPoP token is presented with a proof that carries
+     * {@code ath}.
+     *
+     * @param accessToken the access token
+     * @param tokenType the token's type, {@code DPoP} or {@code Bearer}
+     * @param expectedSub the ID token's subject
+     * @return the claims
+     */
+    public Map<String, Object> userinfo(String accessToken, String tokenType, String expectedSub) {
         if (!text(expectedSub)) throw new OidcError("validation", "userinfo needs the subject to check the response against");
         if (!text(metadata.get("userinfo_endpoint"))) throw new OidcError("discovery", "the provider has no userinfo_endpoint");
-        Http.Result answer = Http.send(String.valueOf(metadata.get("userinfo_endpoint")), "GET", Map.of(
-                "accept", "application/json, application/jwt",
-                "authorization", "Bearer " + accessToken), null, tls(), "protocol");
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("accept", "application/json, application/jwt");
+        Http.Result answer = resource("GET", String.valueOf(metadata.get("userinfo_endpoint")), headers, null, accessToken, tokenType);
         if (answer.status() == 401) throw new OidcError("protocol", "userinfo refused the access token", null, "invalid_token");
         if (answer.status() != 200) throw new OidcError("protocol", "userinfo answered " + answer.status());
         Map<String, Object> claims;
         if (answer.contentType().contains("application/jwt")) {
             Map<String, Object> extra = new LinkedHashMap<>();
             extra.put("algorithms", algorithms);
+            extra.put("requireTypAndAtHash", false);
             claims = idToken(answer.body().strip(), extra);
         } else {
             Object body;
@@ -266,6 +479,65 @@ public final class RelyingParty {
         }
         if (!expectedSub.equals(claims.get("sub"))) throw new OidcError("validation", "userinfo sub does not match the ID token sub");
         return claims;
+    }
+
+    /**
+     * Sends one request to a resource server with an access token. A DPoP
+     * token goes as {@code Authorization: DPoP} with a proof carrying
+     * {@code ath}; a 401 whose {@code WWW-Authenticate} names
+     * {@code use_dpop_nonce} is retried once with the nonce the response gave.
+     *
+     * @param method the HTTP method
+     * @param url the URL
+     * @param headers request headers, or null
+     * @param body the body, or null
+     * @param accessToken the access token
+     * @param tokenType the token's type, {@code DPoP} or {@code Bearer}
+     * @return the answer
+     */
+    public Http.Result resource(String method, String url, Map<String, String> headers, byte[] body, String accessToken, String tokenType) {
+        boolean bound = "dpop".equalsIgnoreCase(tokenType);
+        if (bound && dpop == null) throw new OidcError("protocol", "a DPoP token needs a DPoP key, and this relying party does not use DPoP");
+        Http.Result answer = null;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            Map<String, String> sent = new LinkedHashMap<>();
+            if (headers != null) sent.putAll(headers);
+            sent.keySet().removeIf(name -> "authorization".equalsIgnoreCase(name) || "dpop".equalsIgnoreCase(name));
+            if (bound) {
+                sent.put("authorization", "DPoP " + accessToken);
+                sent.put("dpop", dpop.proof(method, url, accessToken));
+            } else {
+                sent.put("authorization", "Bearer " + accessToken);
+            }
+            answer = Http.send(url, method, sent, body, tls(), "protocol");
+            if (!bound) return answer;
+            String nonce = answer.header("dpop-nonce");
+            dpop.rememberNonce(url, nonce);
+            String challenge = answer.header("www-authenticate");
+            boolean askedForNonce = answer.status() == 401 && challenge != null
+                    && challenge.toLowerCase(java.util.Locale.ROOT).startsWith("dpop")
+                    && challenge.contains("use_dpop_nonce");
+            if (!askedForNonce || !text(nonce)) return answer;
+        }
+        return answer;
+    }
+
+    /**
+     * A transport for the Shared Signals receiver: every call to the
+     * transmitter presents a client credentials token for the scope, with a
+     * DPoP proof when the token is DPoP-bound. A 401 that is not a nonce
+     * challenge drops the cached client credentials token.
+     *
+     * @param scope the client credentials scope, usually {@code ssf.manage}
+     * @return the transport
+     */
+    public SignalsReceiver.Transport transmitterTransport(String scope) {
+        return (method, url, headers, body) -> {
+            Credentials token = clientCredentials(scope);
+            Http.Result answer = resource(method, url, headers, body, token.accessToken, token.tokenType);
+            if (answer.status() == 401) clientCredentials = null;
+            return answer;
+        };
     }
 
     public String endSessionUrl(String idToken, String state) {
@@ -292,10 +564,12 @@ public final class RelyingParty {
         checks.put("jwks", keys(false));
         checks.put("clockToleranceSec", config.get("clockToleranceSec"));
         checks.put("maxIdTokenAgeSec", config.get("maxIdTokenAgeSec"));
+        checks.put("requireTypAndAtHash", config.get("requireIdTokenTypAndAtHash") != Boolean.FALSE);
         if (text(config.get("clientSecret"))) checks.put("clientSecret", config.get("clientSecret"));
         for (Map.Entry<String, Object> entry : extra.entrySet()) {
             if (!"algorithms".equals(entry.getKey())) checks.put(entry.getKey(), entry.getValue());
         }
+        if (extra.get("requireTypAndAtHash") == Boolean.FALSE) checks.put("requireTypAndAtHash", false);
         try {
             return IdToken.validate(token, checks);
         } catch (OidcError err) {
@@ -324,10 +598,12 @@ public final class RelyingParty {
         if (!(parsed.get("token_type") instanceof String tokenType) || tokenType.isEmpty()) {
             throw new OidcError("protocol", "the token response has no token_type");
         }
-        if ("dpop".equalsIgnoreCase(tokenType)) {
-            throw new OidcError("protocol", "the provider returned a DPoP token; this client asked for a Bearer token");
+        if (dpop != null && !"dpop".equalsIgnoreCase(tokenType)) {
+            throw new OidcError("protocol", "the token request carried a DPoP proof and the token_type is " + tokenType + ", not DPoP");
         }
-        if (!"bearer".equalsIgnoreCase(tokenType)) throw new OidcError("protocol", "the token response token_type is " + tokenType);
+        if (dpop == null && !"bearer".equalsIgnoreCase(tokenType)) {
+            throw new OidcError("protocol", "the token request carried no DPoP proof and the token_type is " + tokenType + ", not Bearer");
+        }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("access_token", access);
         out.put("token_type", tokenType);
@@ -339,12 +615,28 @@ public final class RelyingParty {
     }
 
     private Map<String, Object> form(String url, Map<String, ?> body) {
-        Map<String, String> headers = new LinkedHashMap<>();
-        headers.put("accept", "application/json");
-        headers.put("content-type", "application/x-www-form-urlencoded");
-        Map<String, Object> fields = new LinkedHashMap<>(body);
-        ClientAuth.apply(config, key, fields, headers, String.valueOf(metadata.get("issuer")));
-        Http.Result answer = Http.send(url, "POST", headers, Codec.formBody(fields).getBytes(StandardCharsets.UTF_8), tls(), "protocol");
+        Http.Result answer = null;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            Map<String, String> headers = new LinkedHashMap<>();
+            headers.put("accept", "application/json");
+            headers.put("content-type", "application/x-www-form-urlencoded");
+            Map<String, Object> fields = new LinkedHashMap<>(body);
+            ClientAuth.apply(config, key, fields, headers, String.valueOf(metadata.get("issuer")));
+            if (dpop != null) headers.put("dpop", dpop.proof("POST", url, null));
+            answer = Http.send(url, "POST", headers, Codec.formBody(fields).getBytes(StandardCharsets.UTF_8), tls(), "protocol");
+            if (dpop == null) break;
+            String nonce = answer.header("dpop-nonce");
+            dpop.rememberNonce(url, nonce);
+            if (answer.status() != 400 || !text(nonce) || !answer.body().contains("use_dpop_nonce")) break;
+            Map<String, Object> problem;
+            try {
+                problem = Jsons.map(Jsons.read(answer.body()));
+            } catch (Exception err) {
+                Caught.warn(err);
+                problem = null;
+            }
+            if (problem == null || !"use_dpop_nonce".equals(problem.get("error"))) break;
+        }
         Object parsed;
         try {
             parsed = answer.body() == null || answer.body().isEmpty() ? Map.of() : Jsons.read(answer.body());
@@ -388,6 +680,7 @@ public final class RelyingParty {
         login.name = claim(claims, "name");
         login.preferredUsername = claim(claims, "preferred_username");
         login.sid = claim(claims, "sid");
+        login.acr = claim(claims, "acr");
         if (tokens.get("refresh_token") instanceof String refresh) login.refreshToken = refresh;
         if (tokens.get("expires_in") instanceof Number expires) {
             login.expiresAt = new Date(System.currentTimeMillis() + (long) (expires.doubleValue() * 1000));
@@ -462,6 +755,8 @@ public final class RelyingParty {
         public String redirectUri;
         public Integer maxAge;
         public String expectedSub;
+        /** The requested {@code acr_values} (space-separated), or null; the ID token's {@code acr} must be one of them. */
+        public String acrValues;
     }
 
     public static class AuthorizeOptions {
@@ -485,6 +780,10 @@ public final class RelyingParty {
         public String name;
         public String preferredUsername;
         public String sid;
+        /** The ID token's {@code acr}, or null. */
+        public String acr;
+        /** The session cache handle this sign-in's tokens are kept under. */
+        public String sessionId;
         public String refreshToken;
         public Date expiresAt;
         public String scope;
