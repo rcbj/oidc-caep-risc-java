@@ -25,7 +25,7 @@ COPY demo/pom.xml demo/pom.xml
 COPY demo/src demo/src
 RUN mvn -B -DskipTests package
 
-FROM eclipse-temurin:17-jre
+FROM eclipse-temurin:25-jre
 RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl curl ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 # The demo module's runnable jar (the demo, the library and its dependencies),
