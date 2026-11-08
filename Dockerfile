@@ -3,7 +3,7 @@
 
 # `docker build --target test` runs the suite in this image.
 # The demo image below does not run it.
-FROM maven:3.9.9-eclipse-temurin-17 AS test
+FROM maven:3.9-eclipse-temurin-26 AS test
 # TrustChainTest runs the install script's trust-chain code, which is Python.
 RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
@@ -17,7 +17,7 @@ COPY scripts scripts
 COPY demo/oidc.json demo/oidc.json
 RUN mvn -B test
 
-FROM maven:3.9.9-eclipse-temurin-17 AS build
+FROM maven:3.9-eclipse-temurin-26 AS build
 WORKDIR /src
 COPY pom.xml .
 COPY library library
@@ -25,7 +25,7 @@ COPY demo/pom.xml demo/pom.xml
 COPY demo/src demo/src
 RUN mvn -B -DskipTests package
 
-FROM eclipse-temurin:17-jre
+FROM eclipse-temurin:25-jre
 RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl curl ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 # The demo module's runnable jar (the demo, the library and its dependencies),

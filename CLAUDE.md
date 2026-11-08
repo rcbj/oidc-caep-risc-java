@@ -6,7 +6,7 @@ A confidential OpenID Connect relying party for a traditional Java application, 
 
 The license is the MIT License in `LICENSE`. A pull request merged into `main` publishes the library (`library/` only; the demo never) to Maven Central after the test workflow succeeds on that commit. A direct push does not. `publish.yml` runs `mvn -Prelease -f library/pom.xml deploy` in the Maven container: the `release` profile adds the sources and javadoc jars, a GPG signature on every file, and the Central publishing plugin, which uploads, publishes and waits until the release is live. Maven Central has no trusted publishing, so the job uses four repository secrets: `CENTRAL_TOKEN_USERNAME` and `CENTRAL_TOKEN_PASSWORD` (a Central Portal user token) and `GPG_PRIVATE_KEY` and `GPG_PASSPHRASE` (the release signing key, whose public half is on a public key server). A release happens when the library's files changed since the last release's tag: `publish.yml` takes one patch above the highest published version, publishes it, and creates the matching tag and GitHub Release. A change to tests, the demo, or the docs releases nothing. To choose a version or start a new minor, raise `VERSION`; the version is stamped in CI and is not committed, so the manifests can trail what is published. `-Dcentral.skipPublishing=true` builds and signs everything and uploads nothing. `develop` and `main` are the same commit.
 
-Java 17. JSON is Jackson. Signatures are verified with the JDK (`Signature` and `Mac`). Do not wrap Spring Security, the Nimbus OIDC SDK, or Authlib.
+Java 25. JSON is Jackson. Signatures are verified with the JDK (`Signature` and `Mac`). Do not wrap Spring Security, the Nimbus OIDC SDK, or Authlib.
 
 ## Layout
 
@@ -55,7 +55,7 @@ Keep the transaction (`state`, nonce, code verifier) until the browser returns. 
 docker build --target test .
 ```
 
-The `test` stage runs `mvn -B test` (both modules) in `maven:3.9.9-eclipse-temurin-17`. GitHub Actions uses that command. Do not run Maven on the host. The demo stage packages with `-DskipTests` in its own Maven image.
+The `test` stage runs `mvn -B test` (both modules) in `maven:3.9-eclipse-temurin-26`. GitHub Actions uses that command. Do not run Maven on the host. The demo stage packages with `-DskipTests` in its own Maven image.
 
 The stub tests do not start iya-sts. The `test` stage installs `python3` and `openssl` for `TrustChainTest`. The scripts need only Python's standard library and the `openssl` command: no `pip install` on the host, and no `python3-cryptography` in either image. `python3 scripts/live_iya_sts.py` does start one, unless `IYA_STS_URL` names one that is already running. It runs the install script on the host in a scratch copy of this checkout (it writes the `tlsCa` chain), then builds the demo image (which carries the chain), starts it with `TLS_CA_REFRESH=0` and no CA mount, signs the demo in and checks two Shared Signals events on `GET /live-status`. The nightly workflow runs both. It never binds port 3000, 8081 or 18481-18495; the defaults are 18544 and 18644. Secrets go to `docker run` as `-e NAME`. No script prints a password or secret, or a URL (trace lines carry fixed labels); the client secret and a generated test-user password (`demo/generated/<user>.password`) are files created 0600, and only the password file's path is printed. Every `ssl` context in `scripts/` sets TLS 1.2 as the minimum.
 
