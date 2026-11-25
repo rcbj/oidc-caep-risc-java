@@ -9,6 +9,8 @@ import com.iyasec.oidc.OidcError;
 import com.iyasec.oidc.RelyingParty;
 import com.iyasec.oidc.ssf.MemorySessionIndex;
 import com.iyasec.oidc.ssf.SignalsReceiver;
+import com.iyasec.pep.Access;
+import com.iyasec.pep.Decision;
 import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -32,7 +34,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 
-/** Demo. GET /healthz, GET /live-status, GET /, GET /login, GET /callback, POST /logout. */
+/** Demo. GET /healthz, GET /live-status, GET /, GET /login, GET /callback, POST /logout, and the PEP's /attribute-protected and /orders/&lt;id&gt;. */
 public final class Demo {
     private static final Path ROOT = Path.of("").toAbsolutePath();
     private static final byte[] SECRET = secret();
@@ -69,6 +71,13 @@ public final class Demo {
         server.setExecutor(Executors.newCachedThreadPool());
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             if (receiver != null) receiver.stop();
+            if (rp != null && rp.pep() != null) {
+                try {
+                    rp.pep().stop();
+                } catch (Exception err) {
+                    Caught.error(err);
+                }
+            }
             server.stop(0);
         }));
         server.start();
@@ -112,6 +121,17 @@ public final class Demo {
                 logout(exchange);
                 return;
             }
+            if ("/attribute-protected".equals(path)) {
+                attributeProtected(exchange);
+                return;
+            }
+            if (path.startsWith("/orders/")) {
+                String id = path.substring("/orders/".length());
+                if (!id.isEmpty() && !id.contains("/")) {
+                    order(exchange, id);
+                    return;
+                }
+            }
             send(exchange, 404, page("Not found", "<h1>Not found</h1>"), "text/html; charset=utf-8", null);
         } catch (Exception err) {
             Caught.error(err);
@@ -145,7 +165,7 @@ public final class Demo {
             row(rows, "Username", login.preferredUsername);
             row(rows, "Token type", login.tokenType);
             row(rows, "UserInfo", userinfo(party, session));
-            String body = "<h1>Signed in as " + esc(who) + "</h1><table class=\"facts\">" + rows
+            String body = "<h1>Signed in as " + esc(who) + "</h1><p><a href=\"/attribute-protected\">Attribute-protected</a> <a href=\"/orders/42\">Order 42</a></p><table class=\"facts\">" + rows
                     + "</table><p><small>The access token and the refresh token stay in this process. This page does not show them.</small></p><p><small>Shared Signals: "
                     + esc(receiverState) + "</small></p><form method=\"post\" action=\"/logout\"><button type=\"submit\">Sign out</button></form>";
             send(exchange, 200, page("Signed in", body), "text/html; charset=utf-8", null);
@@ -177,7 +197,56 @@ public final class Demo {
         }
         body.put("receiver", receiverState);
         body.put("events", List.copyOf(LIVE_EVENTS));
+        if (rp != null && rp.pep() != null) {
+            try {
+                body.put("pep", Jsons.MAPPER.convertValue(rp.pep().status(), Object.class));
+            } catch (IllegalArgumentException err) {
+                Caught.warn(err);
+            }
+        }
         send(exchange, 200, Jsons.write(body).getBytes(StandardCharsets.UTF_8), "application/json", null);
+    }
+
+    /** GET is {@code read}; any other method is {@code write}. 401 when signed out. */
+    private static void order(HttpExchange exchange, String id) throws IOException {
+        String action = "GET".equals(exchange.getRequestMethod()) ? "read" : "write";
+        decidePage(exchange, Access.of(action, "order", id), true, id, action);
+    }
+
+    /** {@code read} on {@code attribute-protected} {@code attr1}. 401 when signed out. */
+    private static void attributeProtected(HttpExchange exchange) throws IOException {
+        decidePage(exchange, Access.of("read", "attribute-protected", "attr1"), false, null, "read");
+    }
+
+    private static void decidePage(HttpExchange exchange, Access access, boolean order, String id, String action) throws IOException {
+        Session session = session(exchange);
+        if (session == null) {
+            send(exchange, 401, page("Sign in first", "<h1>Sign in first</h1><p><a href=\"/login\">Sign in</a></p>"), "text/html; charset=utf-8", null);
+            return;
+        }
+        RelyingParty party;
+        try {
+            party = rp();
+        } catch (RuntimeException err) {
+            Caught.error(err);
+            party = null;
+        }
+        if (party == null || party.pep() == null) {
+            send(exchange, 403, page("Not allowed", "<h1>Not allowed</h1><p>No decision could be asked for.</p>"), "text/html; charset=utf-8", null);
+            return;
+        }
+        Map<String, Object> claims = userinfoClaims(party, session);
+        Decision decision = party.decide(session.login, access, claims);
+        int status = decision.httpStatus();
+        if (decision.isPermit()) {
+            if (order) {
+                send(exchange, status, page("Order " + id, "<h1>Order " + esc(id) + "</h1><p>The PEP permitted <code>" + esc(action) + "</code>.</p>"), "text/html; charset=utf-8", null);
+            } else {
+                send(exchange, status, page("Allowed", "<h1>Allowed</h1><p>The PEP permitted it: your attr1 is abc123.</p>"), "text/html; charset=utf-8", null);
+            }
+            return;
+        }
+        send(exchange, status, page("Not allowed", "<h1>Not allowed</h1>"), "text/html; charset=utf-8", null);
     }
 
     private static void rememberEvent(Map<String, Object> event) {
@@ -276,6 +345,7 @@ public final class Demo {
                     party.removeSession(id);
                 }))
                 .tls(party.tls())
+                .relyingParty(party)
                 // Every call to the transmitter presents a client credentials
                 // token, with a DPoP proof when the token is DPoP-bound.
                 .transport(party.transmitterTransport("ssf.manage"))
@@ -302,15 +372,24 @@ public final class Demo {
      */
     private static String userinfo(RelyingParty party, Session session) {
         if (party == null) return "not called";
+        userinfoClaims(party, session);
+        return session.userinfo;
+    }
+
+    /** Userinfo claims already fetched, or a best-effort fetch. A failure leaves the ID token claims alone. */
+    private static Map<String, Object> userinfoClaims(RelyingParty party, Session session) {
+        if (session.userinfoClaims != null) return session.userinfoClaims;
         try {
             RelyingParty.Credentials token = party.sessionAccessToken(session.id);
             Map<String, Object> claims = party.userinfo(token.accessToken, token.tokenType, session.login.subject);
+            session.userinfoClaims = claims;
             session.userinfo = "ok (" + token.tokenType + ", " + claims.size() + " claims)";
+            return claims;
         } catch (Exception err) {
             Caught.warn(err);
             session.userinfo = "failed: " + (err instanceof OidcError oidc ? oidc.code + ": " + oidc.getMessage() : String.valueOf(err));
+            return Map.of();
         }
-        return session.userinfo;
     }
 
     @SuppressWarnings("unchecked")
@@ -530,6 +609,7 @@ public final class Demo {
         final RelyingParty.Login login;
         final long expires;
         volatile String userinfo = "not called yet";
+        volatile Map<String, Object> userinfoClaims;
 
         Session(String id, RelyingParty.Login login, long expires) {
             this.id = id;

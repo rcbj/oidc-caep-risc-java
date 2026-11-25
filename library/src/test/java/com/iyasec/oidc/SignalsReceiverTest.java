@@ -5,6 +5,7 @@ package com.iyasec.oidc;
 import com.iyasec.oidc.ssf.Events;
 import com.iyasec.oidc.ssf.SecEvent;
 import com.iyasec.oidc.ssf.SignalsReceiver;
+import com.iyasec.pep.Pep;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterAll;
@@ -162,6 +163,91 @@ class SignalsReceiverTest {
         assertTrue(sent.contains("POST /ssf/verify"), String.valueOf(sent));
     }
 
+    @Test
+    void addSubjectFollowsAPersonAndRemoveSubjectWaitsForTheLastSignIn() throws Exception {
+        int before = stub.subjectCalls.size();
+        List<String> errors = new ArrayList<>();
+        SignalsReceiver receiver = SignalsReceiver.builder(stub.base, (ids, event) -> {})
+                .headers(() -> Map.of("authorization", "Bearer app-token"))
+                .pollIntervalMs(60_000)
+                .onError(errors::add)
+                .log(quiet())
+                .build();
+        assertFalse(receiver.eventsRequested().contains(Pep.POLICIES_CHANGED_EVENT));
+        receiver.track(session("L-a1", "carol", "S1"));
+        receiver.track(session("L-a2", "carol", "S2"));
+        receiver.start();
+        long adds = stub.subjectCalls.stream().skip(before).filter(call -> "/ssf/subjects:add".equals(call.get("path"))).count();
+        assertEquals(1, adds);
+        receiver.untrack("L-a1");
+        long removes = stub.subjectCalls.stream().skip(before).filter(call -> "/ssf/subjects:remove".equals(call.get("path"))).count();
+        assertEquals(0, removes);
+        receiver.untrack("L-a2");
+        removes = stub.subjectCalls.stream().skip(before).filter(call -> "/ssf/subjects:remove".equals(call.get("path"))).count();
+        assertEquals(1, removes);
+        assertTrue(errors.isEmpty());
+        receiver.stop();
+    }
+
+    @Test
+    void aRefusedSubjectCallDoesNotFailSignIn() {
+        int saved = stub.subjectStatus;
+        stub.subjectStatus = 403;
+        List<String> errors = new ArrayList<>();
+        SignalsReceiver receiver = SignalsReceiver.builder(stub.base, (ids, event) -> {})
+                .headers(() -> Map.of("authorization", "Bearer app-token"))
+                .pollIntervalMs(60_000)
+                .onError(errors::add)
+                .log(quiet())
+                .build();
+        try {
+            receiver.start();
+            receiver.track(session("L-no", "dana", "S9"));
+            assertFalse(errors.isEmpty());
+        } finally {
+            stub.subjectStatus = saved;
+            receiver.stop();
+        }
+    }
+
+    @Test
+    void aReusedStreamGainsTheMissingEvent() {
+        Map<String, Object> delivery = new LinkedHashMap<>();
+        delivery.put("method", "urn:ietf:rfc:8936");
+        delivery.put("endpoint_url", stub.base + "/ssf/poll/old");
+        Map<String, Object> stream = new LinkedHashMap<>();
+        stream.put("stream_id", "old");
+        stream.put("iss", stub.base);
+        stream.put("aud", "my-app");
+        stream.put("delivery", delivery);
+        stream.put("events_requested", List.of("urn:example:one"));
+        stream.put("events_delivered", List.of("urn:example:one"));
+        stub.streams.add(0, stream);
+        int patches = stub.patches.size();
+        SignalsReceiver receiver = SignalsReceiver.builder(stub.base, (ids, event) -> {})
+                .headers(() -> Map.of("authorization", "Bearer app-token"))
+                .eventsRequested(List.of("urn:example:one", "urn:example:two"))
+                .pollIntervalMs(60_000)
+                .log(quiet())
+                .build();
+        try {
+            receiver.start();
+            assertTrue(stub.patches.size() > patches);
+            assertTrue(String.valueOf(stub.streams.get(0).get("events_requested")).contains("urn:example:two"));
+        } finally {
+            receiver.stop();
+            stub.streams.removeIf(item -> "old".equals(item.get("stream_id")));
+        }
+    }
+
+    static SignalsReceiver.Log quiet() {
+        return new SignalsReceiver.Log() {
+            public void info(String message) {}
+            public void warn(String message) {}
+            public void error(String message) {}
+        };
+    }
+
     static Map<String, Object> session(String localId, String person, String sid) {
         Map<String, Object> session = new LinkedHashMap<>();
         session.put("localId", localId);
@@ -209,12 +295,15 @@ class SignalsReceiverTest {
             }
             String base = stub.base;
             if ("/.well-known/ssf-configuration".equals(path)) {
-                json(exchange, 200, Map.of(
-                        "issuer", base,
-                        "jwks_uri", base + "/jwks",
-                        "configuration_endpoint", base + "/ssf/stream",
-                        "verification_endpoint", base + "/ssf/verify",
-                        "delivery_methods_supported", List.of("urn:ietf:rfc:8936")));
+                Map<String, Object> doc = new LinkedHashMap<>();
+                doc.put("issuer", base);
+                doc.put("jwks_uri", base + "/jwks");
+                doc.put("configuration_endpoint", base + "/ssf/stream");
+                doc.put("verification_endpoint", base + "/ssf/verify");
+                doc.put("add_subject_endpoint", base + "/ssf/subjects:add");
+                doc.put("remove_subject_endpoint", base + "/ssf/subjects:remove");
+                doc.put("delivery_methods_supported", List.of("urn:ietf:rfc:8936"));
+                json(exchange, 200, doc);
                 return;
             }
             if ("/jwks".equals(path)) {
@@ -223,6 +312,30 @@ class SignalsReceiverTest {
             }
             if ("/ssf/stream".equals(path) && "GET".equals(exchange.getRequestMethod())) {
                 json(exchange, 200, stub.streams);
+                return;
+            }
+            if ("/ssf/subjects:add".equals(path) || "/ssf/subjects:remove".equals(path)) {
+                Map<String, Object> call = new LinkedHashMap<>();
+                call.put("path", path);
+                call.put("body", text.isEmpty() ? Map.of() : Jsons.map(Jsons.read(text)));
+                stub.subjectCalls.add(call);
+                exchange.sendResponseHeaders(stub.subjectStatus, -1);
+                exchange.close();
+                return;
+            }
+            if ("/ssf/stream".equals(path) && "PATCH".equals(exchange.getRequestMethod())) {
+                Map<String, Object> body = Jsons.map(Jsons.read(text));
+                stub.patches.add(body);
+                if (stub.patchStatus != 200 || stub.streams.isEmpty()) {
+                    json(exchange, stub.patchStatus, Map.of("error", "invalid_request"));
+                    return;
+                }
+                Map<String, Object> stream = stub.streams.get(0);
+                if (String.valueOf(stream.get("stream_id")).equals(String.valueOf(body.get("stream_id")))) {
+                    stream.put("events_requested", body.get("events_requested"));
+                    stream.put("events_delivered", body.get("events_requested"));
+                }
+                json(exchange, 200, stream);
                 return;
             }
             if ("/ssf/stream".equals(path) && "POST".equals(exchange.getRequestMethod())) {
@@ -337,5 +450,9 @@ class SignalsReceiverTest {
         final List<String> acked = new CopyOnWriteArrayList<>();
         final Map<String, Object> errs = new LinkedHashMap<>();
         final List<Map<String, Object>> streams = new ArrayList<>();
+        final List<Map<String, Object>> subjectCalls = new CopyOnWriteArrayList<>();
+        final List<Map<String, Object>> patches = new CopyOnWriteArrayList<>();
+        volatile int subjectStatus = 204;
+        volatile int patchStatus = 200;
     }
 }

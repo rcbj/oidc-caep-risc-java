@@ -112,6 +112,12 @@ public final class Config {
             ssf = new LinkedHashMap<>();
             ssf.put("transmitter", transmitter);
             if (truthy(ssfDoc.get("pollIntervalMs"))) ssf.put("pollIntervalMs", ssfDoc.get("pollIntervalMs"));
+            if (ssfDoc.containsKey("addSubjects") && ssfDoc.get("addSubjects") != null) {
+                if (!(ssfDoc.get("addSubjects") instanceof Boolean)) {
+                    throw new OidcError("config", "ssf.addSubjects must be true or false");
+                }
+                ssf.put("addSubjects", ssfDoc.get("addSubjects"));
+            }
         }
         Map<String, Object> out = new LinkedHashMap<>();
         if (issuer != null) out.put("issuer", issuer);
@@ -139,6 +145,7 @@ public final class Config {
         if (tlsCa != null && !tlsCa.isEmpty()) out.put("tlsCa", tlsCa);
         if (!signals) out.put("signals", Boolean.FALSE);
         if (ssf != null) out.put("ssf", ssf);
+        if (doc.get("pep") != null) out.put("pep", doc.get("pep"));
         return out;
     }
 
@@ -177,6 +184,9 @@ public final class Config {
         out.put("redirectUri", checkRedirect(redirect, "redirectUri"));
         if (given.get("postLogoutRedirectUri") instanceof String post && !post.isBlank()) {
             out.put("postLogoutRedirectUri", checkRedirect(post.trim(), "postLogoutRedirectUri"));
+        }
+        if (out.get("ssf") instanceof Map<?, ?> ssf && ssf.get("addSubjects") != null && !(ssf.get("addSubjects") instanceof Boolean)) {
+            throw new OidcError("config", "ssf.addSubjects must be true or false");
         }
         return out;
     }

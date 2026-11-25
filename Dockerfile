@@ -5,8 +5,14 @@
 # The demo image below does not run it.
 FROM maven:3.9-eclipse-temurin-26 AS test
 # TrustChainTest runs the install script's trust-chain code, which is Python.
-RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl git && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
+# iya-pep is not on Maven Central yet. The suite compiles against this commit.
+RUN git init /opt/iya-pep \
+ && git -C /opt/iya-pep remote add origin https://github.com/rcbj/iya-pep-java.git \
+ && git -C /opt/iya-pep fetch --depth 1 origin d2bbf5ee73a93ec3b2aeb01219fc093fbb41c645 \
+ && git -C /opt/iya-pep checkout --detach FETCH_HEAD \
+ && mvn -B -f /opt/iya-pep/pom.xml -DskipTests install
 # Both modules: library/ (the published library) and demo/ (the demo, and
 # TrustChainTest, which runs scripts/ against demo/oidc.json).
 COPY pom.xml .
@@ -18,7 +24,14 @@ COPY demo/oidc.json demo/oidc.json
 RUN mvn -B test
 
 FROM maven:3.9-eclipse-temurin-26 AS build
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
+# The same pin as the test stage: the demo image compiles against that commit.
+RUN git init /opt/iya-pep \
+ && git -C /opt/iya-pep remote add origin https://github.com/rcbj/iya-pep-java.git \
+ && git -C /opt/iya-pep fetch --depth 1 origin d2bbf5ee73a93ec3b2aeb01219fc093fbb41c645 \
+ && git -C /opt/iya-pep checkout --detach FETCH_HEAD \
+ && mvn -B -f /opt/iya-pep/pom.xml -DskipTests install
 COPY pom.xml .
 COPY library library
 COPY demo/pom.xml demo/pom.xml

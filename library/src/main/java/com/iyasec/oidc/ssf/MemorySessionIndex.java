@@ -24,7 +24,7 @@ public final class MemorySessionIndex {
         this.max = maxSessions;
     }
 
-    public void add(Map<String, ?> session) {
+    public synchronized Map<String, Object> add(Map<String, ?> session) {
         String localId = String.valueOf(session.get("localId"));
         if (sessions.size() >= max && !sessions.containsKey(localId)) {
             long now = System.currentTimeMillis();
@@ -37,23 +37,47 @@ public final class MemorySessionIndex {
         Map<String, Object> stored = new LinkedHashMap<>();
         session.forEach((key, value) -> stored.put(key, value));
         if (stored.get("email") instanceof String email) stored.put("email", email.toLowerCase());
-        sessions.put(localId, stored);
+        Map<String, Object> previous = sessions.put(localId, stored);
+        return previous == null ? null : new LinkedHashMap<>(previous);
     }
 
-    public void remove(String localId) {
+    public synchronized void remove(String localId) {
         sessions.remove(localId);
     }
 
-    public List<String> byPerson(String person) {
+    /** Removes one sign-in and returns it, for Remove Subject. */
+    public synchronized Map<String, Object> take(String localId) {
+        Map<String, Object> gone = sessions.remove(localId);
+        return gone == null ? null : new LinkedHashMap<>(gone);
+    }
+
+    /** The sign-ins still followed, with expired ones dropped. */
+    public synchronized List<Map<String, Object>> live() {
+        long now = System.currentTimeMillis();
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (String key : new ArrayList<>(sessions.keySet())) {
+            Map<String, Object> value = sessions.get(key);
+            if (value == null) continue;
+            Object expires = value.get("expiresAt");
+            if (expires != null && stamp(expires) <= now) {
+                sessions.remove(key);
+                continue;
+            }
+            out.add(new LinkedHashMap<>(value));
+        }
+        return out;
+    }
+
+    public synchronized List<String> byPerson(String person) {
         return find(session -> person.equals(session.get("person")));
     }
 
-    public List<String> byEmail(String email) {
+    public synchronized List<String> byEmail(String email) {
         String wanted = email.toLowerCase();
         return find(session -> wanted.equals(session.get("email")));
     }
 
-    public List<String> byIdpSession(String idpSession) {
+    public synchronized List<String> byIdpSession(String idpSession) {
         return find(session -> idpSession.equals(session.get("idpSession")));
     }
 
