@@ -14,6 +14,10 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import com.iyasec.oidc.ssf.SignalsReceiver;
+import com.iyasec.pep.Access;
+import com.iyasec.pep.Decision;
+import com.iyasec.pep.Pep;
+import com.iyasec.pep.PepException;
 
 /** A confidential OpenID Connect relying party. Tokens stay in this process. */
 public final class RelyingParty {
@@ -29,14 +33,16 @@ public final class RelyingParty {
     private final Map<String, Long> usedCodes = new LinkedHashMap<>();
     private volatile CachedCredentials clientCredentials;
     private final Dpop dpop;
+    private final Pep pep;
     private volatile SessionStore sessions = new MemorySessionStore();
     private final Map<String, Object> sessionLocks = new ConcurrentHashMap<>();
 
-    private RelyingParty(Map<String, Object> config, Map<String, Object> metadata, PrivateKey key, Dpop dpop) {
+    private RelyingParty(Map<String, Object> config, Map<String, Object> metadata, PrivateKey key, Dpop dpop, Pep pep) {
         this.config = config;
         this.metadata = metadata;
         this.key = key;
         this.dpop = dpop;
+        this.pep = pep;
         this.algorithms = Discovery.idTokenAlgorithms(list(metadata.get("id_token_signing_alg_values_supported")),
                 config.get("idTokenSignedResponseAlg") == null ? null : String.valueOf(config.get("idTokenSignedResponseAlg")),
                 strings(config.get("idTokenSigningAlgs")));
@@ -113,7 +119,55 @@ public final class RelyingParty {
         PrivateKey key = text(config.get("privateKeyPem"))
                 ? JwsCrypto.loadPrivateKey(String.valueOf(config.get("privateKeyPem")), config.get("privateKeyAlg") == null ? "RS256" : String.valueOf(config.get("privateKeyAlg")))
                 : null;
-        return new RelyingParty(config, metadata, key, dpopFor(config, metadata));
+        Dpop dpop = dpopFor(config, metadata);
+        Pep pep = PepWiring.build(config, metadata, dpop);
+        // Registration, and in local mode the first pull, then the PEP's own
+        // thread. An unreachable service is retried there. Decisions stay a
+        // refusal until then. decide itself never throws.
+        if (pep != null) {
+            try {
+                pep.start();
+            } catch (PepException err) {
+                throw new OidcError("config", err.detail(), err);
+            }
+        }
+        return new RelyingParty(config, metadata, key, dpop, pep);
+    }
+
+    /**
+     * The embedded PEP, or null when the configuration has no {@code pep} section.
+     *
+     * @return the PEP
+     */
+    public Pep pep() {
+        return pep;
+    }
+
+    /**
+     * Decides one access for a sign-in. With no {@code pep} section this
+     * throws: the caller answers 403 itself, and nothing here permits by
+     * default. {@code pep.decide} never throws.
+     *
+     * @param login the sign-in
+     * @param access the action and the resource
+     * @return the PEP's decision
+     */
+    public Decision decide(Login login, Access access) {
+        return decide(login, access, Map.of());
+    }
+
+    /**
+     * {@link #decide(Login, Access)} with userinfo claims laid over the ID
+     * token's.
+     *
+     * @param login the sign-in
+     * @param access the action and the resource
+     * @param userinfo claims the application fetched, or an empty map
+     * @return the PEP's decision
+     */
+    public Decision decide(Login login, Access access, Map<String, ?> userinfo) {
+        if (pep == null) throw new OidcError("config", "no pep section is configured");
+        return pep.decide(PepWiring.subjectWithUserinfo(login, userinfo == null ? Map.of() : userinfo), access);
     }
 
     private static Dpop dpopFor(Map<String, Object> config, Map<String, Object> metadata) {
